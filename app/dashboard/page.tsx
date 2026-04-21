@@ -1,7 +1,9 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { STORAGE_KEYS } from "@/backend/utils/siteMap";
+import { calculateOldRegimeTax } from "@/backend/utils/taxCalculator";
 
 type User = {
   name: string;
@@ -10,70 +12,101 @@ type User = {
 export default function DashboardPage() {
   const router = useRouter();
   const pathname = usePathname();
-
-  const [user, setUser] = useState<User | null>(() => {
-    if (typeof window === 'undefined') return null;
-
-    try {
-      const storedUser = localStorage.getItem('user');
-      return storedUser ? JSON.parse(storedUser) : null;
-    } catch {
-      return null;
-    }
+  const [isInitializing, setIsInitializing] = useState(true);
+  
+  const [taxData, setTaxData] = useState({
+    totalIncome: 0,
+    deductions: 0,
+    taxPayable: 0,
   });
 
-  const [selectedYear, setSelectedYear] = useState('2025-26');
+  const [user, setUser] = useState<User | null>(null);
 
-  const [verifiedPan, setVerifiedPan] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null;
+  const [selectedYear] = useState("2024-25");
 
-    try {
-      return localStorage.getItem('verifiedPan');
-    } catch {
-      return null;
-    }
-  });
+  const [verifiedPan, setVerifiedPan] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!user) {
-      router.push('/login');
+    const calculateTax = () => {
+      try {
+        const storedUserStr = localStorage.getItem(STORAGE_KEYS.USER);
+        const storedUser = storedUserStr ? JSON.parse(storedUserStr) : null;
+        setUser(storedUser);
+
+        const storedPan = localStorage.getItem(STORAGE_KEYS.VERIFIED_PAN);
+        setVerifiedPan(storedPan);
+
+        const draft = JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_DRAFT) || "{}");
+        const deductions = JSON.parse(localStorage.getItem(STORAGE_KEYS.DEDUCTIONS) || "{}");
+        
+        const salary = Number(draft?.salary?.salary17_1 || 0);
+        const perks = Number(draft?.salary?.perquisites17_2 || 0);
+        const profits = Number(draft?.salary?.profits17_3 || 0);
+        const totalIncome = salary + perks + profits - 50000; // Standard Deduction
+        
+        const totalDeductions = Number(deductions.section80C || 0) + 
+                               Number(deductions.healthInsurance || 0) + 
+                               Number(deductions.homeLoanInterest || 0);
+
+        const taxableIncome = Math.max(0, totalIncome - totalDeductions);
+                               
+        setTaxData({
+          totalIncome: totalIncome + 50000,
+          deductions: totalDeductions,
+          taxPayable: calculateOldRegimeTax(taxableIncome),
+        });
+      } catch (e) {
+        console.error("Error calculating tax summary", e);
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+
+    calculateTax();
+    window.addEventListener("taxbee:storage-updated", calculateTax);
+    return () => window.removeEventListener("taxbee:storage-updated", calculateTax);
+  }, []);
+
+  useEffect(() => {
+    if (!isInitializing && !user) {
+      router.push("/login");
     }
-  }, [user, router]);
+  }, [user, isInitializing, router]);
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    localStorage.removeItem('verifiedPan');
+    localStorage.removeItem(STORAGE_KEYS.USER);
+    localStorage.removeItem(STORAGE_KEYS.VERIFIED_PAN);
+    localStorage.removeItem("token");
     setUser(null);
     setVerifiedPan(null);
-    router.push('/login');
+    router.push("/login");
   };
 
   const sidebarItems = [
-    { icon: '⊙', label: 'Dashboard', route: '/dashboard' },
-    { icon: '📄', label: 'File Tax', route: '/file-tax' },
-    { icon: '💰', label: 'Tax Savings', route: '/tax-savings' },
-    { icon: '📁', label: 'Documents', route: '/documents' },
-    { icon: '❓', label: 'Help', route: '/help' },
+    { icon: "⊙", label: "Dashboard", route: "/dashboard" },
+    { icon: "📄", label: "File Tax", route: "/file-tax" },
+    { icon: "💰", label: "Tax Savings", route: "/tax-savings" },
+    { icon: "📁", label: "Documents", route: "/documents" },
+    { icon: "❓", label: "Help", route: "/help" },
   ];
 
   const quickActions = [
-    { icon: '📋', label: 'Start New ITR Filing', route: '/file-your-itr', color: 'bg-orange-500' },
-    { icon: '📥', label: 'Import Data (Form 26AS / AIS)', route: '/import-data', color: 'bg-blue-600' },
-    { icon: '📄', label: 'Download Filed ITR', route: '/download-itr', color: 'bg-green-600' },
-    { icon: '🤝', label: 'Assistance Filing', route: '/assistance-filing', color: 'bg-red-500' },
+    { icon: "📋", label: "Start New ITR Filing", route: "/file-your-itr", color: "bg-orange-500" },
+    { icon: "📥", label: "Import Data (Form 26AS / AIS)", route: "/import-data", color: "bg-blue-600" },
+    { icon: "📄", label: "Download Filed ITR", route: "/download-itr", color: "bg-green-600" },
+    { icon: "🤝", label: "Assistance Filing", route: "/assistance-filing", color: "bg-red-500" },
   ];
 
   const suggestions = [
-    'Invest ₹50,000 under 80C to save ₹15,600 tax',
-    'Get health insurance to reduce your tax by ₹7,500',
-    'Optimize your HRA to save more',
+    "Invest ₹50,000 under 80C to save ₹15,600 tax",
+    "Get health insurance to reduce your tax by ₹7,500",
+    "Optimize your HRA to save more",
   ];
 
   const activities = [
-    { text: 'Salary details added', status: 'done' },
-    { text: 'Deductions entered', status: 'done' },
-    { text: 'ITR not filed', status: 'pending' },
+    { text: "Salary details added", status: "done" },
+    { text: "Deductions entered", status: "done" },
+    { text: "ITR not filed", status: "pending" },
   ];
 
   return (
@@ -91,8 +124,8 @@ export default function DashboardPage() {
               onClick={() => router.push(item.route)}
               className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
                 pathname === item.route
-                  ? 'bg-yellow-400 text-black'
-                  : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+                  ? "bg-yellow-400 text-black"
+                  : "text-gray-400 hover:bg-gray-800 hover:text-white"
               }`}
             >
               <span>{item.icon}</span>
@@ -111,13 +144,13 @@ export default function DashboardPage() {
 
       <main className="ml-60 flex-1 p-6">
         <div className="mb-6 rounded-[28px] bg-slate-100">
-          <h1 className="text-4xl font-bold text-gray-900" suppressHydrationWarning>
-            Welcome, {user?.name || 'User'}!
+          <h1 className="text-4xl font-bold text-gray-900">
+            Welcome, {user?.name || "User"}!
           </h1>
-          <p className="mt-2 text-lg text-gray-500" suppressHydrationWarning>
+          <p className="mt-2 text-lg text-gray-500">
             Financial Year : {selectedYear}
             <span className="mx-2">|</span>
-            PAN: {verifiedPan || 'Not Verified'}
+            PAN: {verifiedPan || "Not Verified"}
           </p>
         </div>
 
@@ -169,22 +202,22 @@ export default function DashboardPage() {
           <div className="grid grid-cols-4 gap-4 border-t border-gray-200 pt-6 text-center">
             <div>
               <p className="mb-2 text-lg text-gray-500">Total Income:</p>
-              <p className="text-4xl font-bold text-gray-800">₹ 8,50,000</p>
+              <p className="text-4xl font-bold text-gray-800">₹ {taxData.totalIncome.toLocaleString()}</p>
             </div>
 
             <div>
               <p className="mb-2 text-lg text-gray-500">Deductions:</p>
-              <p className="text-4xl font-bold text-gray-800">₹ 1,20,000</p>
+              <p className="text-4xl font-bold text-gray-800">₹ {taxData.deductions.toLocaleString()}</p>
             </div>
 
             <div>
               <p className="mb-2 text-lg text-gray-500">Tax Payable:</p>
-              <p className="text-4xl font-bold text-gray-800">₹ 27,400</p>
+              <p className="text-4xl font-bold text-gray-800">₹ {taxData.taxPayable.toLocaleString()}</p>
             </div>
 
             <div>
               <p className="mb-2 text-lg text-gray-500">Refund / Due:</p>
-              <p className="text-4xl font-bold text-gray-800">₹ 5,200</p>
+              <p className="text-4xl font-bold text-gray-800">₹ 0</p>
             </div>
           </div>
 
@@ -196,7 +229,9 @@ export default function DashboardPage() {
         </div>
 
         <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-3xl font-bold text-gray-800">Smart Tax Saving Suggestions</h2>
+          <h2 className="mb-4 text-3xl font-bold text-gray-800">
+            Smart Tax Saving Suggestions
+          </h2>
 
           <div className="space-y-4 border-t border-gray-200 pt-5">
             {suggestions.map((item) => (
@@ -219,12 +254,12 @@ export default function DashboardPage() {
               >
                 <span
                   className={`flex h-9 w-9 items-center justify-center rounded-full border text-lg ${
-                    item.status === 'done'
-                      ? 'border-green-300 text-green-600'
-                      : 'border-gray-300 text-gray-500'
+                    item.status === "done"
+                      ? "border-green-300 text-green-600"
+                      : "border-gray-300 text-gray-500"
                   }`}
                 >
-                  {item.status === 'done' ? '✔' : '◔'}
+                  {item.status === "done" ? "✔" : "◔"}
                 </span>
                 <span>{item.text}</span>
               </div>

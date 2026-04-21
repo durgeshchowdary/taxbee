@@ -1,4 +1,4 @@
-import ITRDraft from '../models/ITRDraft.js';
+import ITRDraft from '../models/itrDraft.js';
 
 export const saveDraft = async (req, res) => {
   try {
@@ -19,13 +19,18 @@ export const saveDraft = async (req, res) => {
       { userKey },
       {
         userKey,
-        salary,
-        houseProperty,
-        pgbp,
-        capitalGains,
-        otherSources,
+        salary: salary || {},
+        houseProperty: houseProperty || {},
+        pgbp: pgbp || {},
+        capitalGains: capitalGains || {},
+        otherSources: otherSources || {},
       },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+        runValidators: true,
+      }
     );
 
     res.status(200).json({
@@ -34,13 +39,20 @@ export const saveDraft = async (req, res) => {
     });
   } catch (error) {
     console.error('saveDraft error:', error);
-    res.status(500).json({ message: 'Server error while saving draft' });
+    res.status(500).json({
+      message: 'Server error while saving draft',
+      error: error.message,
+    });
   }
 };
 
 export const getDraft = async (req, res) => {
   try {
     const { userKey } = req.params;
+
+    if (!userKey) {
+      return res.status(400).json({ message: 'userKey is required' });
+    }
 
     const draft = await ITRDraft.findOne({ userKey });
 
@@ -51,6 +63,9 @@ export const getDraft = async (req, res) => {
     res.status(200).json({ draft });
   } catch (error) {
     console.error('getDraft error:', error);
-    res.status(500).json({ message: 'Server error while fetching draft' });
+    res.status(500).json({
+      message: 'Server error while fetching draft',
+      error: error.message,
+    });
   }
 };

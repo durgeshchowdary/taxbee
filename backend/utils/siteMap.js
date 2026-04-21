@@ -1,0 +1,110 @@
+export const STORAGE_KEYS = {
+  DEDUCTIONS: 'taxBeeDeductions',
+  ITR_DRAFT: 'itrDraft',
+  ITR_SUMMARY: 'itrSummary',
+  VERIFIED_PAN: 'verifiedPan',
+  USER: 'user',
+  CHAT_HISTORY: 'beeAssistantMessages',
+  MEMORY: 'beeAssistantMemory',
+  MEMORY_ENABLED: 'beeAssistantMemoryEnabled',
+  WORKFLOW: 'beeAssistantWorkflow',
+  AUDIT_TRAIL: 'beeAssistantAuditTrail',
+  HIGHLIGHT: 'beeAssistantHighlight',
+};
+
+export const TAXBEE_SITE_MAP = [
+  {
+    route: "/",
+    title: "Landing Page",
+    purpose: "Introduces TaxBee and links users to authentication or app entry points.",
+    tasks: ["learn about TaxBee", "start using app"],
+    keywords: ["landing", "home", "about taxbee", "start"],
+  },
+  {
+    route: "/login",
+    title: "Login",
+    purpose: "Sign in to an existing TaxBee account.",
+    tasks: ["login", "sign in", "access account"],
+    keywords: ["login", "sign in", "account"],
+  },
+  {
+    route: "/signup",
+    title: "Signup",
+    purpose: "Create a new TaxBee account.",
+    tasks: ["signup", "register", "create account"],
+    keywords: ["signup", "register", "create account"],
+  },
+  {
+    route: "/dashboard",
+    title: "Dashboard",
+    purpose: "Main workspace for filing actions, summaries, activity, and help.",
+    tasks: ["view summary", "start filing", "open tools", "check activity"],
+    keywords: ["dashboard", "summary", "main", "overview", "activity"],
+  },
+  {
+    route: "/import-data",
+    title: "Import Data",
+    purpose: "Verify/import taxpayer details such as PAN context before filing.",
+    tasks: ["verify PAN", "import taxpayer data", "start user data"],
+    keywords: ["pan", "import", "verify", "taxpayer"],
+  },
+  {
+    route: "/file-tax",
+    title: "Income Overview",
+    purpose: "Shows income declaration overview and income heads.",
+    tasks: ["view income heads", "start declaration", "income overview"],
+    keywords: ["income heads", "file tax", "declaration overview"],
+  },
+  {
+    route: "/file-your-itr",
+    title: "File Your ITR",
+    purpose: "Enter salary income, save draft, and proceed to deductions.",
+    tasks: ["enter salary", "save draft", "declare income", "review salary"],
+    keywords: ["itr", "salary", "form 16", "income", "draft", "file return"],
+  },
+  {
+    route: "/deductions",
+    title: "Deductions",
+    purpose: "Enter deductions such as 80C, 80D, and home loan interest.",
+    tasks: ["claim deductions", "enter 80C", "enter 80D", "home loan interest"],
+    keywords: ["deduction", "80c", "80d", "insurance", "home loan", "save tax"],
+  },
+  {
+    route: "/tax-savings",
+    title: "Tax Savings",
+    purpose: "Explore tax saving options and deduction ideas.",
+    tasks: ["find savings", "reduce tax", "investment options"],
+    keywords: ["tax savings", "save tax", "reduce tax", "investment"],
+  },
+  {
+    route: "/upload-documents",
+    title: "Upload Documents",
+    purpose: "Upload documents needed for tax filing.",
+    tasks: ["upload Form 16", "upload proofs", "upload files"],
+    keywords: ["upload", "documents", "form 16", "proof", "files"],
+  },
+  {
+    route: "/documents",
+    title: "Documents",
+    purpose: "Review available/uploaded documents.",
+    tasks: ["review documents", "check proofs"],
+    keywords: ["documents", "review files", "proofs"],
+  },
+  {
+    route: "/help",
+    title: "Help",
+    purpose: "Answer frequently asked questions and provide support.",
+    tasks: ["get help", "faq", "support"],
+    keywords: ["help", "support", "faq", "stuck"],
+  },
+  {
+    route: "/income-details",
+    title: "Income Details",
+    purpose: "Legacy/simple income details entry page.",
+    tasks: ["enter income details"],
+    keywords: ["income details", "income"],
+  },
+];
+
+export const getCurrentPageInfo = (route = "") =>
+  TAXBEE_SITE_MAP.find((page) => page.route === route) || null;
