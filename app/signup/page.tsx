@@ -9,11 +9,13 @@ export default function SignupPage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSignup = async () => {
     setError('');
+    setMessage('');
     setLoading(true);
 
     if (!name || !email || !password) {
@@ -23,16 +25,13 @@ export default function SignupPage() {
     }
 
     try {
-      const res = await fetch(
-        'https://taxbee-production.up.railway.app/api/auth/signup',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ name, email, password }),
-        }
-      );
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name, email, password }),
+      });
 
       const data = await res.json();
 
@@ -42,12 +41,9 @@ export default function SignupPage() {
         return;
       }
 
-      // ✅ Store same keys as login
-      localStorage.setItem('token', data.token);
-      localStorage.setItem('user', JSON.stringify(data.user));
-
-      // ✅ Redirect
-      router.push('/dashboard');
+      setMessage(data.message || 'Account created. Redirecting to login...');
+      setLoading(false);
+      setTimeout(() => router.push('/login'), 1200);
     } catch (err) {
       console.error(err);
       setError('Server error. Please try again.');
@@ -70,6 +66,12 @@ export default function SignupPage() {
         {error && (
           <p className="text-red-400 text-sm text-center mb-3 bg-red-900/20 p-2 rounded">
             {error}
+          </p>
+        )}
+
+        {message && (
+          <p className="text-green-300 text-sm text-center mb-3 bg-green-900/20 p-2 rounded">
+            {message}
           </p>
         )}
 

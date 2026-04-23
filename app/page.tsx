@@ -1,279 +1,123 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
+import Image from 'next/image';
+import Link from 'next/link';
+
+const navItems = [
+  ['Services', '/services'],
+  ['Pricing', '/pricing'],
+  ['About', '/about'],
+  ['Contact', '/contact'],
+];
+
+const steps = [
+  ['Upload', 'Bring AIS, Form 16, or Form 26AS exports into TaxBee.'],
+  ['Review', 'Confirm or correct extracted values before they become trusted data.'],
+  ['Optimize', 'Compare regimes, savings scenarios, and filing risks.'],
+  ['File with help', 'Request expert review when a human should verify the return.'],
+];
+
+const trustSignals = [
+  'Human-in-the-loop extraction review',
+  'Explainable old vs new regime comparison',
+  'Point-based filing risk breakdown',
+  'Grounded copilot using your actual tax state',
+];
+
 export default function Home() {
-   const router = useRouter();
   return (
-    <div className="min-h-screen bg-gradient-to-br from-black via-gray-900 to-yellow-500 text-white">
+    <main className="min-h-screen bg-[#f7faf8] text-gray-950">
+      <header className="sticky top-0 z-30 border-b border-gray-200 bg-white/90 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+          <Link href="/" className="flex items-center gap-3">
+            <span className="flex h-11 w-11 overflow-hidden rounded-xl ring-1 ring-yellow-300">
+              <Image src="/logo.jpg" alt="TaxBee" width={44} height={44} className="object-cover" priority />
+            </span>
+            <span className="text-xl font-black tracking-tight">TaxBee</span>
+          </Link>
+          <nav className="hidden items-center gap-6 text-sm font-semibold text-gray-600 md:flex">
+            {navItems.map(([label, href]) => (
+              <Link key={href} href={href} className="hover:text-gray-950">
+                {label}
+              </Link>
+            ))}
+          </nav>
+          <div className="flex items-center gap-3">
+            <Link href="/login" className="rounded-xl px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-100">
+              Login
+            </Link>
+            <Link href="/signup" className="rounded-xl bg-gray-950 px-4 py-2 text-sm font-bold text-white hover:bg-gray-800">
+              Start filing
+            </Link>
+          </div>
+        </div>
+      </header>
 
-      {/* Navbar */}
-      <nav className="flex items-center justify-between px-8 py-4 bg-black border-b border-gray-700">
-        <div className="flex items-center gap-3">
-          <img src="/logo.jpg" alt="logo" className="h-10" />
-          <h1 className="text-xl font-bold text-yellow-400">TaxBee</h1>
+      <section className="mx-auto grid max-w-7xl gap-10 px-6 py-16 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
+        <div>
+          <p className="mb-4 inline-flex rounded-full bg-yellow-100 px-3 py-1 text-sm font-bold text-yellow-900">
+            AI-assisted tax filing with expert review
+          </p>
+          <h1 className="text-5xl font-black leading-tight tracking-tight md:text-6xl">
+            Turn tax documents into trusted filing decisions.
+          </h1>
+          <p className="mt-6 max-w-2xl text-lg leading-8 text-gray-600">
+            TaxBee ingests tax documents, extracts values with confidence, lets users confirm corrections, computes regime-aware tax, and explains what to do next.
+          </p>
+          <div className="mt-8 flex flex-wrap gap-3">
+            <Link href="/signup" className="rounded-xl bg-blue-600 px-5 py-3 font-bold text-white shadow-sm hover:bg-blue-700">
+              Start with TaxBee
+            </Link>
+            <Link href="/services" className="rounded-xl border border-gray-300 bg-white px-5 py-3 font-bold text-gray-800 hover:bg-gray-50">
+              View services
+            </Link>
+          </div>
         </div>
 
-        <a href="/login">
-          <button className="px-4 py-2 border border-yellow-400 text-yellow-400 rounded hover:bg-yellow-400 hover:text-black transition">
-            Login
-          </button>
-        </a>
-      </nav>
-
-      {/* Hero */}
-      <section className="text-center py-24 px-6">
-        <h2 className="text-5xl font-bold mb-6">
-          Smart Tax Assistance & Computation
-        </h2>
-        <p className="text-gray-300 mb-8">
-          Manage income, compute tax head-wise, and get expert suggestions.
-        </p>
-        <button
-  onClick={() => router.push('/login')}
-  className="bg-yellow-400 text-black px-6 py-3 rounded font-semibold hover:bg-yellow-300 transition"
->
-  Get Started
-</button>
-      </section>
-
-      {/* Tax Assistance */}
-      <section className="px-10 py-20 bg-black">
-        <h2 className="text-3xl font-bold text-yellow-400 mb-10 text-center">
-          Tax Assistance
-        </h2>
-
-        <div className="grid md:grid-cols-3 gap-8">
-          <div className="bg-gray-900 p-6 rounded-xl">
-            <h3 className="font-bold text-lg mb-2 text-yellow-400">Income Tracking</h3>
-            <p className="text-gray-400">
-              Track all sources of income including salary, business, capital gains, and other earnings.
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-xl">
+          <div className="rounded-xl bg-gray-950 p-5 text-white">
+            <p className="text-sm font-bold text-yellow-300">Best Action Right Now</p>
+            <h2 className="mt-2 text-2xl font-black">Confirm extracted Form 16 fields</h2>
+            <p className="mt-3 text-sm leading-6 text-gray-300">
+              4 fields need review before TaxBee treats them as canonical filing data.
             </p>
           </div>
-
-          <div className="bg-gray-900 p-6 rounded-xl">
-            <h3 className="font-bold text-lg mb-2 text-yellow-400">Automated Tax Calculation</h3>
-            <p className="text-gray-400">
-              Automatically compute your tax liability based on current tax rules.
-            </p>
-          </div>
-
-          <div className="bg-gray-900 p-6 rounded-xl">
-            <h3 className="font-bold text-lg mb-2 text-yellow-400">Smart Tax Suggestions</h3>
-            <p className="text-gray-400">
-              Get personalized advice to reduce tax liability.
-            </p>
+          <div className="mt-4 grid gap-3">
+            {trustSignals.map((item) => (
+              <div key={item} className="rounded-xl border border-gray-200 bg-slate-50 p-4 text-sm font-semibold text-gray-700">
+                {item}
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* How it Works */}
-      <section className="px-10 py-24 bg-black">
-        <h2 className="text-4xl font-bold text-yellow-400 text-center mb-16">
-          How TaxBee Works
-        </h2>
-
-        <div className="grid md:grid-cols-3 gap-10">
-          <div className="bg-gray-900 p-10 rounded-xl">Enter Income Details</div>
-          <div className="bg-gray-900 p-10 rounded-xl">Compute Tax Automatically</div>
-          <div className="bg-gray-900 p-10 rounded-xl">Get Suggestions</div>
+      <section className="border-y border-gray-200 bg-white py-12">
+        <div className="mx-auto grid max-w-7xl gap-4 px-6 md:grid-cols-4">
+          {steps.map(([title, detail], index) => (
+            <div key={title} className="rounded-xl bg-slate-50 p-5">
+              <span className="text-sm font-black text-blue-600">0{index + 1}</span>
+              <h3 className="mt-3 text-xl font-black">{title}</h3>
+              <p className="mt-2 text-sm leading-6 text-gray-600">{detail}</p>
+            </div>
+          ))}
         </div>
       </section>
 
-      {/* Head-wise Tax */}
-      <section className="px-10 py-20 bg-black">
-        <h2 className="text-3xl font-bold text-yellow-400 text-center mb-10">
-          Head-wise Tax Computation
-        </h2>
-
-        <div className="grid md:grid-cols-5 gap-6">
-          <div className="bg-white text-black p-6 rounded-xl">Salary</div>
-          <div className="bg-white text-black p-6 rounded-xl">Business</div>
-          <div className="bg-white text-black p-6 rounded-xl">Capital Gains</div>
-          <div className="bg-white text-black p-6 rounded-xl">Other Sources</div>
-          <div className="bg-white text-black p-6 rounded-xl">House Property</div>
+      <section className="mx-auto max-w-7xl px-6 py-16">
+        <div className="grid gap-6 md:grid-cols-3">
+          {[
+            ['For taxpayers', 'Upload documents, review extracted values, and understand your tax position before filing.'],
+            ['For experts', 'Use validated data, audit trails, and risk explanations to review faster.'],
+            ['For families', 'Plan deductions, compare regimes, and track next-year tax opportunities.'],
+          ].map(([title, detail]) => (
+            <div key={title} className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+              <h3 className="text-2xl font-black">{title}</h3>
+              <p className="mt-3 leading-7 text-gray-600">{detail}</p>
+            </div>
+          ))}
         </div>
       </section>
-
-      {/* ✅ NOW FIXED SECTIONS (OUTSIDE GRID) */}
-      <section className="py-20 bg-gray-900 text-center">
-  <h2 className="text-3xl font-bold text-yellow-400 mb-10">
-    Why Choose TaxBee?
-  </h2>
-
-  <div className="grid md:grid-cols-3 gap-8 px-10">
-    <div className="bg-black p-6 rounded-xl">
-      <h3 className="text-yellow-400 font-bold mb-2">Fast & Accurate</h3>
-      <p className="text-gray-400">Instant tax calculations with high accuracy.</p>
-    </div>
-
-    <div className="bg-black p-6 rounded-xl">
-      <h3 className="text-yellow-400 font-bold mb-2">User Friendly</h3>
-      <p className="text-gray-400">Simple UI designed for everyone.</p>
-    </div>
-
-    <div className="bg-black p-6 rounded-xl">
-      <h3 className="text-yellow-400 font-bold mb-2">Secure Data</h3>
-      <p className="text-gray-400">Your financial data is fully protected.</p>
-    </div>
-  </div>
-</section>
-
-<section className="py-20 bg-black text-center">
-  <h2 className="text-3xl font-bold text-yellow-400 mb-10">
-    What Users Say
-  </h2>
-
-  <div className="grid md:grid-cols-3 gap-8 px-10">
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <p className="text-gray-400">
-        "TaxBee made my tax calculation super easy!"
-      </p>
-      <h4 className="text-yellow-400 mt-3">– Student User</h4>
-    </div>
-
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <p className="text-gray-400">
-        "Very clean UI and helpful suggestions."
-      </p>
-      <h4 className="text-yellow-400 mt-3">– Freelancer</h4>
-    </div>
-
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <p className="text-gray-400">
-        "Best beginner-friendly tax tool."
-      </p>
-      <h4 className="text-yellow-400 mt-3">– Small Business Owner</h4>
-    </div>
-  </div>
-</section>
-
-<section className="py-20 bg-gray-900 text-center">
-  <h2 className="text-3xl font-bold text-yellow-400 mb-10">
-    Powerful Features
-  </h2>
-
-  <div className="max-w-4xl mx-auto space-y-6 text-gray-400">
-    <p>✔ AI-based tax suggestions</p>
-    <p>✔ Head-wise income breakdown</p>
-    <p>✔ Real-time tax computation</p>
-    <p>✔ Beginner-friendly dashboard</p>
-    <p>✔ Future-ready financial insights</p>
-  </div>
-</section>
-
-      {/* Guidelines */}
-      <section className="w-full py-20 bg-black text-center">
-        <h2 className="text-3xl text-yellow-400 mb-6">Guidelines</h2>
-        <div className="max-w-3xl mx-auto text-gray-400 space-y-4">
-          <p>• Ensure all income details entered are accurate.</p>
-          <p>• TaxBee provides estimates based on current tax rules.</p>
-          <p>• Always verify final tax filings with official sources.</p>
-          <p>• Use AI suggestions for planning, not as legal advice.</p>
-        </div>
-      </section>
-
-      {/* Contact */}
-      <section className="w-full py-20 bg-gray-900 text-center">
-        <h2 className="text-3xl text-yellow-400 mb-6">Contact Us</h2>
-        <div className="text-gray-400 space-y-2">
-          <p>Email: support@taxbee.com</p>
-          <p>Phone: +91 9346701583</p>
-          <p>Location: India</p>
-        </div>
-      </section>
-
-      {/* Founder */}
-<section className="w-full py-20 bg-black text-center">
-  <h2 className="text-3xl text-yellow-400 mb-10">Meet the Founders</h2>
-
-  <div className="grid md:grid-cols-5 gap-6 px-6">
-
-    {/* Durgesh */}
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <img 
-        src="durgesh.jpg"
-        className="w-20 h-20 mx-auto rounded-full mb-3"
-      />
-      <h3 className="text-white font-bold">Durgesh Chowdary</h3>
-    </div>
-
-    {/* Ramya */}
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <img 
-        src="ramya.jpg"
-        className="w-20 h-20 mx-auto rounded-full mb-3"
-      />
-      <h3 className="text-white font-bold">Ramya Nalluri</h3>
-    </div>
-
-    {/* Dharani */}
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <img 
-        src="dharani.jpg"
-        className="w-20 h-20 mx-auto rounded-full mb-3"
-      />
-      <h3 className="text-white font-bold">Dharani Muthagari</h3>
-    </div>
-
-    {/* Lokeshwari */}
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <img 
-        src="lokeshwari.jpg"
-        className="w-20 h-20 mx-auto rounded-full mb-3"
-      />
-      <h3 className="text-white font-bold">Lokeshwari Devi</h3>
-    </div>
-
-    {/* Nandini */}
-    <div className="bg-gray-900 p-6 rounded-xl">
-      <img 
-        src="/nandini.jpg"
-        className="w-20 h-20 mx-auto rounded-full mb-3"
-      />
-      <h3 className="text-white font-bold">Nandini Vinnakota</h3>
-    </div>
-
-  </div>
-</section>
-      {/* Pricing */}
-      <section className="text-center py-20">
-        <h2 className="text-3xl font-bold text-yellow-400 mb-6">
-          Simple Pricing
-        </h2>
-
-        <div className="bg-white text-black p-8 rounded-xl inline-block">
-          <h3 className="text-xl font-bold">₹499/month</h3>
-          <p>7-day free trial</p>
-        </div>
-      </section>
-
-      {/* Impact */}
-      <section className="py-20 text-center bg-black">
-        <h2 className="text-3xl font-bold text-yellow-400 mb-10">
-          Our Impact
-        </h2>
-
-        <div className="grid md:grid-cols-3 gap-8">
-          <div>
-            <h3 className="text-4xl font-bold text-yellow-400">1K+</h3>
-            <p className="text-gray-400">Users</p>
-          </div>
-          <div>
-            <h3 className="text-4xl font-bold text-yellow-400">₹1k+</h3>
-            <p className="text-gray-400">Taxes Calculated</p>
-          </div>
-          <div>
-            <h3 className="text-4xl font-bold text-yellow-400">90%</h3>
-            <p className="text-gray-400">Accuracy</p>
-          </div>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="bg-black text-center py-6 text-gray-500">
-        © 2026 TaxBee | Built by TaxBee Team
-      </footer>
-
-    </div>
+    </main>
   );
 }

@@ -5,16 +5,17 @@ const userSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   password: { type: String, required: true, minlength: 6 },
-  isVerified: { type: Boolean, default: true } // No OTP verification
+  isVerified: { type: Boolean, default: false },
+  otpHash: { type: String, select: false },
+  otpExpiresAt: { type: Date, select: false },
 }, { timestamps: true });
 
 // Hash password before saving
-userSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
+userSchema.pre('save', async function() {
+  if (!this.isModified('password')) return;
 
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
-  next();
 });
 
 export default mongoose.model("User", userSchema);

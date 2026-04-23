@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import crypto from "crypto";
-import { analyzeTaxContext } from "../utils/taxEngine.js";
+import { analyzeTaxContext, buildTaxIntelligence } from "../utils/taxEngine.js";
 import { getRelevantTaxKnowledge } from "../utils/taxKnowledge.js";
 import { buildAssistantActions } from "../utils/assistantActions.js";
 
@@ -31,7 +31,8 @@ const getCachedModel = ({ apiKey, systemPrompt }) => {
     model: "gemini-2.5-flash",
     systemInstruction: systemPrompt,
     generationConfig: {
-      temperature: 0.4,
+      temperature: 0.75,
+      topP: 0.9,
       maxOutputTokens: 900,
     },
   });
@@ -86,28 +87,72 @@ const sanitizeHistory = (history = []) =>
     }))
     .filter((item) => item.text);
 
-const getFallbackReply = ({ taxAnalysis, actions }) => {
+const shouldShowDraftFallback = (message = "") => {
+  const normalized = message.toLowerCase();
+  return [
+    "review",
+    "check",
+    "validate",
+    "validation",
+    "missing",
+    "incomplete",
+    "risk",
+    "error",
+    "mistake",
+    "issue",
+    "problem",
+    "status",
+    "ready",
+    "health",
+    "final",
+    "filing",
+  ].some((term) => normalized.includes(term));
+};
+
+const getLocalKnowledgeFallback = (userMessage = "") => {
+  const normalized = userMessage.toLowerCase();
+
+  if (/^(hi|hello|hey|yo|namaste)\b/.test(normalized)) {
+    return "Hey, I am having trouble reaching the AI model right now, but I am still here. You can ask me to review your filing, compare regimes, or check deductions once the model is reachable again.";
+  }
+
+  if (normalized.includes("80c")) {
+    return "I am having trouble reaching the AI model right now. Quick note: 80C covers eligible investments like EPF, PPF, ELSS, life insurance premium, tuition fees, and principal repayment, usually capped at Rs. 1,50,000 under the old regime.";
+  }
+
+  if (normalized.includes("80d") || normalized.includes("health insurance")) {
+    return "I am having trouble reaching the AI model right now. Quick note: 80D usually relates to eligible health insurance premiums and preventive health checkups, subject to limits based on age and who is covered.";
+  }
+
+  if (normalized.includes("old") && normalized.includes("new")) {
+    return "I am having trouble reaching the AI model right now. TaxBee can still compare old vs new regime from your saved draft once your income and deduction values are entered.";
+  }
+
+  return "I am having trouble reaching the AI model right now. Your saved draft is safe, so please try again in a moment.";
+};
+
+const getFallbackReply = ({ userMessage, taxAnalysis, actions }) => {
   const nextIssues = [
     ...(taxAnalysis?.missingFields || []),
     ...(taxAnalysis?.warnings || []),
   ].slice(0, 3);
 
-  if (nextIssues.length > 0) {
-    return `I am having trouble reaching the AI model, but TaxBee can still help. Based on your saved draft, check these next:\n${nextIssues.join("\n")}`;
+  if (shouldShowDraftFallback(userMessage) && nextIssues.length > 0) {
+    return `I am having trouble reaching the AI model right now, but your draft is still safe. From what TaxBee can see, these are the next things to check:\n${nextIssues.join("\n")}`;
   }
 
   if (actions?.some((action) => action.type === "navigate")) {
-    return "I am having trouble reaching the AI model, but I can still open the right TaxBee page for you.";
+    return "I am having trouble reaching the AI model right now, but I can still take you to the right TaxBee page.";
   }
 
-  return "I am having trouble reaching the AI model. Your saved draft is safe, and you can try again in a moment.";
+  return getLocalKnowledgeFallback(userMessage);
 };
 
 const getFastActionReply = ({ userMessage, actions }) => {
   const normalized = userMessage.toLowerCase();
   const storageAction = actions.find((action) => action.type === "set_local_storage");
   if (storageAction) {
-    return `${storageAction.label || "I found a field update"}. Please review and apply it in the confirmation box.`;
+    return `${storageAction.label || "I found the field to update"}. Please review it in the confirmation box before I save it.`;
   }
 
   const routeAction = actions.find((action) => action.type === "navigate");
@@ -115,7 +160,7 @@ const getFastActionReply = ({ userMessage, actions }) => {
     /\b(open|go to|take me|show|navigate|start|begin)\b/.test(normalized);
 
   if (routeAction && isNavigationCommand) {
-    return `${routeAction.label || "Opening the right page"} now. I will guide you there.`;
+    return `${routeAction.label || "Opening the right page"} now. I will guide you from there.`;
   }
 
   return null;
@@ -189,6 +234,7 @@ export const getBeeAssistantReply = async (req, res) => {
     }
 
     const taxAnalysis = analyzeTaxContext(context);
+    const taxIntelligence = buildTaxIntelligence(context);
     const taxKnowledge = getRelevantTaxKnowledge(userMessage, context);
     const actions = buildAssistantActions({ message: userMessage, taxAnalysis });
     const fastReply = getFastActionReply({ userMessage, actions });
@@ -204,11 +250,12 @@ export const getBeeAssistantReply = async (req, res) => {
       });
     }
 
-    const systemPrompt = `You are Bee Assistant, a ChatGPT-like AI assistant inside TaxBee, an Indian ITR filing app.
-Your style should feel natural, conversational, helpful, and adaptive like ChatGPT.
+    const systemPrompt = `You are Bee Assistant, a human-feeling AI assistant inside TaxBee, an Indian ITR filing app.
+Your job is to respond like a thoughtful ChatGPT-style helper: natural, conversational, context-aware, and easy to talk to.
 
 You can:
 - answer normal conversational messages
+- respond warmly to greetings, thanks, frustration, confusion, and small talk
 - explain Indian tax concepts simply
 - review the user's draft
 - point out missing fields
@@ -220,8 +267,19 @@ You can:
 - guide users through the TaxBee filing workflow step by step when filingWorkflow is present in appContext
 - understand the full TaxBee website using appContext.site.pages and appContext.site.currentPage
 
+Human conversation style:
+- Write like a real person helping in a chat, not like a scripted FAQ, bot menu, or policy document.
+- Match the user's energy and language. If they are casual, be casual. If they are worried, be calm and reassuring. If they are direct, be direct.
+- For greetings or simple messages, keep it short and natural.
+- Do not start every answer with the same phrase. Avoid repeated openings like "Based on..." or "Sure".
+- Use contractions where they sound natural.
+- Be empathetic when the user sounds stuck, but do not overdo compliments or apologies.
+- Ask one clear follow-up question when you need information; do not ask a list of questions unless the user requests a checklist.
+- If the user asks "like ChatGPT", act as a general helpful assistant while staying useful for TaxBee.
+
 Rules:
 - Use taxAnalysis as the source of truth for all math, tax estimates, regime comparisons, missing fields, warnings, and recommendations.
+- Use taxIntelligence for tax health score, deduction simulations, anomaly checks, and next-year planning. Mention the exact reasons when the user asks why a score or suggestion appears.
 - Use taxKnowledge as grounded real-world tax context. Prefer it over general model memory when it is relevant.
 - When taxKnowledge contains a useful source URL and the user asks for rules, documents, deductions, or verification, mention the source briefly.
 - Use longTermMemory and recentChat as conversation memory. Understand follow-up words like "that", "it", "same", "previous", "old one", and "new one" from prior messages.
@@ -248,10 +306,11 @@ ${section ? `Current TaxBee section: ${section}.` : ""}`;
         recentChat: safeHistory,
         appContext: context,
         taxAnalysis,
+        taxIntelligence,
         taxKnowledge,
         availableActions: actions,
         responseInstruction:
-          "Answer the user directly and naturally. Use taxAnalysis when relevant, but do not dump raw JSON. If availableActions includes navigation, mention that TaxBee can open that page.",
+          "Answer the user directly and naturally, like a helpful human in chat. Use taxAnalysis when relevant, but do not dump raw JSON. If availableActions includes navigation, mention that TaxBee can open that page.",
       },
       null,
       2
@@ -308,7 +367,7 @@ ${section ? `Current TaxBee section: ${section}.` : ""}`;
       } catch (error) {
         console.error(`Bee Assistant model error [${requestId}]:`, error);
         degraded = true;
-        reply = getFallbackReply({ taxAnalysis, actions });
+        reply = getFallbackReply({ userMessage, taxAnalysis, actions });
       }
 
       return { reply, memorySummary: updatedMemorySummary, actions, degraded };

@@ -14,6 +14,8 @@ const __dirname = dirname(__filename);
 
 dotenv.config({ path: join(__dirname, ".env") });
 
+mongoose.set("bufferCommands", false);
+
 const app = express();
 
 app.use(
@@ -29,12 +31,14 @@ app.get("/", (req, res) => {
   res.send("Backend is working");
 });
 
-mongoose
-  .connect(
-    process.env.MONGO_URI
-  )
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.log("MongoDB connection error:", err));
+app.get("/health", (req, res) => {
+  const readyState = mongoose.connection.readyState;
+
+  res.status(readyState === 1 ? 200 : 503).json({
+    status: readyState === 1 ? "ok" : "degraded",
+    database: ["disconnected", "connected", "connecting", "disconnecting"][readyState],
+  });
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
@@ -43,6 +47,26 @@ app.use("/api/ai", aiRoutes);
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+const startServer = async () => {
+  if (!process.env.MONGO_URI) {
+    console.error("Missing MONGO_URI in backend/.env");
+    process.exit(1);
+  }
+
+  try {
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 10000,
+    });
+
+    console.log("MongoDB connected");
+
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error("MongoDB connection error:", err.message);
+    process.exit(1);
+  }
+};
+
+startServer();

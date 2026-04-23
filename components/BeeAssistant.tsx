@@ -5,10 +5,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { TAXBEE_SITE_MAP, STORAGE_KEYS } from "@/backend/utils/siteMap";
 import { tokenize, calculateScore } from "@/backend/utils/nlp";
 import { GUIDES, HIGH_VALUE_TAX_TERMS } from "@/backend/utils/BeeAssistantConfig";
+import { buildTaxIntelligence } from "@/backend/utils/taxEngine";
 
 export type Message = {
   sender: "user" | "assistant";
   text: string;
+  guideOfferId?: string;
 };
 
 type AssistantResponse = {
@@ -82,6 +84,26 @@ type AuditEntry = {
   oldValue: unknown;
   newValue: string;
 };
+type ExtractionReviewRecord = {
+  id: string;
+  label: string;
+  value: string;
+  mappedSection: string;
+  confidence: number;
+  status: "extracted" | "confirmed" | "overridden";
+};
+type CopilotScenario = {
+  label: string;
+  tax: number;
+  savingVsCurrent: number;
+  detail: string;
+};
+type CopilotRisk = {
+  title: string;
+  points: number;
+  reason: string;
+  action: string;
+};
 
 const MAX_STORED_MESSAGES = 60;
 const MAX_HISTORY_MESSAGES = 40;
@@ -94,6 +116,40 @@ const INITIAL_MESSAGES: Message[] = [
     text: "Hi, I’m Bee Assistant. I can guide you through filing your ITR step by step.",
   },
 ];
+
+const maskPan = (pan: string | null) => {
+  if (!pan) return null;
+  const normalized = pan.toUpperCase();
+  if (normalized.length < 5) return normalized;
+  return `${normalized.slice(0, 2)}*****${normalized.slice(-3)}`;
+};
+
+const safeUserContext = (rawUser: string | null) => {
+  if (!rawUser) return null;
+
+  try {
+    const user = JSON.parse(rawUser) as {
+      name?: string;
+      email?: string;
+      isVerified?: boolean;
+    };
+
+    return {
+      name: user.name || null,
+      emailDomain: user.email?.includes("@") ? user.email.split("@")[1] : null,
+      isVerified: Boolean(user.isVerified),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const hasAnyAmount = (record: unknown) =>
+  Boolean(
+    record &&
+      typeof record === "object" &&
+      Object.values(record as Record<string, unknown>).some((value) => Number(value || 0) > 0)
+  );
 
 const readAuditTrail = (): AuditEntry[] => {
   if (typeof window === "undefined") return [];
@@ -131,6 +187,36 @@ const findGuideForMessage = (message: string) => {
   const best = sorted[0];
 
   return best && best.score >= 2.5 ? best.guide : null;
+};
+
+const shouldShowValidationSummary = (message = "") => {
+  const normalized = message.toLowerCase();
+  return [
+    "review",
+    "check",
+    "validate",
+    "validation",
+    "missing",
+    "incomplete",
+    "risk",
+    "error",
+    "mistake",
+    "issue",
+    "problem",
+    "status",
+    "ready",
+    "health",
+    "final",
+    "filing",
+  ].some((term) => normalized.includes(term));
+};
+
+const isTaxHelpOverviewRequest = (message = "") => {
+  const normalized = message.toLowerCase();
+  return (
+    /\b(help|guide|assist|support)\b/.test(normalized) &&
+    /\b(tax|itr|return|filing)\b/.test(normalized)
+  );
 };
 
 const notifyStateChange = (key: string, path: string) => {
@@ -211,7 +297,7 @@ export default function BeeAssistant({
                 text: `Hi ${user.name}, I’m Bee Assistant. I can guide you through filing your ITR step by step.`
               }]);
             }
-          } catch (e) {
+          } catch {
             // Silent fallback to default greeting if parsing fails
           }
         }
@@ -269,9 +355,16 @@ export default function BeeAssistant({
         setStoredContext({
           itrDraft: JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_DRAFT) || "null"),
           itrSummary: JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_SUMMARY) || "null"),
+          aisImport: JSON.parse(localStorage.getItem(STORAGE_KEYS.AIS_IMPORT) || "null"),
+          extractionReview: JSON.parse(
+            localStorage.getItem(STORAGE_KEYS.EXTRACTION_REVIEW) || "[]"
+          ),
           deductions: JSON.parse(localStorage.getItem(STORAGE_KEYS.DEDUCTIONS) || "null"),
-          verifiedPan: localStorage.getItem(STORAGE_KEYS.VERIFIED_PAN),
-          user: JSON.parse(localStorage.getItem(STORAGE_KEYS.USER) || "null"),
+          verifiedPan: maskPan(localStorage.getItem(STORAGE_KEYS.VERIFIED_PAN)),
+          taxpayerProfile: JSON.parse(
+            localStorage.getItem(STORAGE_KEYS.TAXPAYER_PROFILE) || "null"
+          ),
+          user: safeUserContext(localStorage.getItem(STORAGE_KEYS.USER)),
         });
         setAuditTrail(readAuditTrail());
       } catch {
@@ -304,33 +397,54 @@ export default function BeeAssistant({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  useEffect(() => {
+    const openAssistant = () => setIsOpen(true);
+    window.addEventListener("taxbee:open-assistant", openAssistant);
+    return () => window.removeEventListener("taxbee:open-assistant", openAssistant);
+  }, []);
+
   const assistantContext = useMemo(
-    () => ({
-      ...storedContext,
-      ...context,
-      site: {
-        currentPath: pathname,
-        currentPage: TAXBEE_SITE_MAP.find((page) => page.route === pathname) || null,
-        pages: TAXBEE_SITE_MAP,
-      },
-      filingWorkflow:
-        activeStepIndex === null || activeGuideId === null
-          ? null
-          : {
-              activeGuideId,
-              activeGuide: GUIDES.find((guide) => guide.id === activeGuideId),
-              activeStepIndex,
-              activeStep: GUIDES.find((guide) => guide.id === activeGuideId)
-                ?.steps[activeStepIndex],
-              currentPath: pathname,
-            },
-    }),
+    () => {
+      const taxIntelligence = buildTaxIntelligence({
+        currentDraft: storedContext.itrDraft,
+        deductions: storedContext.deductions,
+        aisImport: storedContext.aisImport,
+      });
+
+      return {
+        ...storedContext,
+        ...context,
+        taxIntelligence,
+        site: {
+          currentPath: pathname,
+          currentPage: TAXBEE_SITE_MAP.find((page) => page.route === pathname) || null,
+          pages: TAXBEE_SITE_MAP,
+        },
+        filingWorkflow:
+          activeStepIndex === null || activeGuideId === null
+            ? null
+            : {
+                activeGuideId,
+                activeGuide: GUIDES.find((guide) => guide.id === activeGuideId),
+                activeStepIndex,
+                activeStep: GUIDES.find((guide) => guide.id === activeGuideId)
+                  ?.steps[activeStepIndex],
+                currentPath: pathname,
+              },
+      };
+    },
     [storedContext, context, activeGuideId, activeStepIndex, pathname]
   );
 
   const checklist = useMemo<ChecklistItem[]>(() => {
     const draft = storedContext.itrDraft as
-      | { salary?: Record<string, string> }
+      | {
+          salary?: Record<string, string>;
+          houseProperty?: Record<string, string>;
+          pgbp?: Record<string, string>;
+          capitalGains?: Record<string, string>;
+          otherSources?: Record<string, string>;
+        }
       | null
       | undefined;
     const salary = draft?.salary || {};
@@ -351,10 +465,23 @@ export default function BeeAssistant({
         deductions?.healthInsurance ||
         deductions?.homeLoanInterest
     );
+    const hasOtherHeads = Boolean(
+      hasAnyAmount(draft?.houseProperty) ||
+        hasAnyAmount(draft?.pgbp) ||
+        hasAnyAmount(draft?.capitalGains) ||
+        hasAnyAmount(draft?.otherSources)
+    );
 
     return [
-      { label: "PAN/user verified", done: Boolean(storedContext.verifiedPan || storedContext.user) },
-      { label: "Income draft started", done: hasSalary },
+      {
+        label: "PAN/user verified",
+        done: Boolean(storedContext.taxpayerProfile || storedContext.verifiedPan || storedContext.user),
+      },
+      { label: "AIS imported", done: Boolean(storedContext.aisImport) },
+      { label: "AIS review done", done: messages.some((msg) => msg.text.toLowerCase().includes("ais review")) },
+      { label: "Income draft started", done: hasSalary || hasOtherHeads },
+      { label: "All income heads reviewed", done: messages.some((msg) => msg.text.toLowerCase().includes("income heads")) },
+      { label: "Missing documents checked", done: messages.some((msg) => msg.text.toLowerCase().includes("documents")) },
       { label: "Deductions checked", done: hasDeductions },
       { label: "Regime compared", done: messages.some((msg) => msg.text.toLowerCase().includes("regime")) },
       { label: "Final review done", done: messages.some((msg) => msg.text.toLowerCase().includes("review")) },
@@ -367,10 +494,175 @@ export default function BeeAssistant({
     return Math.round((completed / checklist.length) * 100);
   }, [checklist]);
 
+  const copilotSnapshot = useMemo(() => {
+    const taxIntelligence = assistantContext.taxIntelligence as ReturnType<typeof buildTaxIntelligence>;
+    const extractionReview = (storedContext.extractionReview || []) as ExtractionReviewRecord[];
+    const unconfirmedFields = extractionReview.filter((record) => record.status === "extracted");
+    const overriddenFields = extractionReview.filter((record) => record.status === "overridden");
+    const topRisk = taxIntelligence.anomalies.flags[0];
+    const bestSaving = taxIntelligence.recommendations.find((item) => Number(item?.impact || 0) > 0);
+    const scenarioRows = taxIntelligence.explanation.scenarioComparison as CopilotScenario[];
+    const riskRows = taxIntelligence.explanation.riskBreakdown as CopilotRisk[];
+    const bestScenario = scenarioRows
+      .filter((scenario) => scenario.savingVsCurrent > 0)
+      .sort((a, b) => b.savingVsCurrent - a.savingVsCurrent)[0];
+    const missingDocs: string[] = [];
+
+    if (!storedContext.aisImport) missingDocs.push("AIS/Form 26AS");
+    if (taxIntelligence.analysis.income.grossSalary > 0 && unconfirmedFields.length > 0) {
+      missingDocs.push("confirmed extraction review");
+    }
+    if (taxIntelligence.analysis.income.grossSalary > 0 && !storedContext.aisImport) {
+      missingDocs.push("Form 16/TDS proof");
+    }
+
+    return {
+      taxIntelligence,
+      extractionReview,
+      unconfirmedFields,
+      overriddenFields,
+      topRisk,
+      bestSaving,
+      bestScenario,
+      scenarioRows,
+      riskRows,
+      missingDocs,
+    };
+  }, [assistantContext, storedContext]);
+
+  const getGroundedCopilotReply = (message: string) => {
+    const normalized = message.toLowerCase();
+    const {
+      taxIntelligence,
+      unconfirmedFields,
+      overriddenFields,
+      topRisk,
+      bestSaving,
+      bestScenario,
+      scenarioRows,
+      riskRows,
+      missingDocs,
+    } = copilotSnapshot;
+    const bestTax = Math.min(
+      taxIntelligence.analysis.tax.oldRegimeEstimatedTax,
+      taxIntelligence.analysis.tax.newRegimeEstimatedTax
+    );
+    const regime =
+      taxIntelligence.analysis.tax.betterRegime === "same"
+        ? "either regime"
+        : `${taxIntelligence.analysis.tax.betterRegime} regime`;
+
+    if (/\b(what should i do|next|best action|do next|priority)\b/.test(normalized)) {
+      const action = unconfirmedFields.length
+        ? `confirm ${unconfirmedFields.length} extracted field${unconfirmedFields.length === 1 ? "" : "s"} on Import Data`
+        : bestSaving
+          ? bestSaving.title
+          : topRisk
+            ? topRisk.action
+            : "review the final regime comparison";
+      const impact = bestScenario
+        ? `Estimated tax saving: Rs. ${Math.round(bestScenario.savingVsCurrent).toLocaleString("en-IN")}.`
+        : bestSaving
+          ? `Estimated tax saving: Rs. ${Math.round(bestSaving.impact).toLocaleString("en-IN")}.`
+          : "No large tax-saving gap is visible yet.";
+      const riskLine = topRisk
+        ? `Main risk: ${topRisk.title} (+${topRisk.points} risk points).`
+        : "No major risk flag is active right now.";
+
+      return `Best action right now: ${action}.\n${impact}\n${riskLine}\n${unconfirmedFields.length ? "TaxBee should not fully trust extracted values until you confirm or override them." : `Current best tax estimate is Rs. ${Math.round(bestTax).toLocaleString("en-IN")} under the ${regime}.`}`;
+    }
+
+    if (/\b(risk|score|why.*high|filing risk)\b/.test(normalized)) {
+      const risks = riskRows.slice(0, 3);
+      if (!risks.length) {
+        return "Your current risk score is low because TaxBee has not found major mismatches in the tracked fields. Still verify AIS/Form 26AS, Form 16, and deduction proofs before filing.";
+      }
+
+      return [
+        `Your risk score is ${taxIntelligence.anomalies.score}/100 because of these checks:`,
+        ...risks.map((risk) => `+${risk.points}: ${risk.title} - ${risk.reason} Fix: ${risk.action}`),
+      ].join("\n");
+    }
+
+    if (/\b(regime|old|new|why.*choose|chosen)\b/.test(normalized)) {
+      const rows = taxIntelligence.explanation.regimeComparison;
+      return [
+        `TaxBee currently prefers ${regime} because it gives the lowest estimate based on entered data.`,
+        ...rows.map(
+          (row) =>
+            `${row.regime}: taxable income Rs. ${Math.round(row.taxableIncome).toLocaleString("en-IN")}, tax Rs. ${Math.round(row.tax).toLocaleString("en-IN")} (${row.decision}).`
+        ),
+        `Difference: Rs. ${Math.round(taxIntelligence.analysis.tax.estimatedSavings).toLocaleString("en-IN")}.`,
+      ].join("\n");
+    }
+
+    if (/\b(extract|extracted|confidence|confirm|override|source|document)\b/.test(normalized)) {
+      const extractionLine = unconfirmedFields.length
+        ? `${unconfirmedFields.length} extracted field${unconfirmedFields.length === 1 ? " is" : "s are"} still unconfirmed.`
+        : "All currently tracked extracted fields are confirmed or overridden.";
+      const overrideLine = overriddenFields.length
+        ? `${overriddenFields.length} field${overriddenFields.length === 1 ? " was" : "s were"} manually overridden, so user-corrected values are now canonical.`
+        : "No overridden extracted fields yet.";
+      const docLine = missingDocs.length
+        ? `Still useful to add/review: ${missingDocs.join(", ")}.`
+        : "No major missing document signal is visible from current data.";
+
+      return `${extractionLine}\n${overrideLine}\n${docLine}`;
+    }
+
+    if (/\b(audit|history|changed|override trail|who changed)\b/.test(normalized)) {
+      const recent = auditTrail.slice(0, 5);
+      if (!recent.length) {
+        return "No audit entries are stored yet. Once parser extractions are created or you confirm/override values, TaxBee records the field, old value, new value, source, and timestamp.";
+      }
+
+      return [
+        "Recent audit trail:",
+        ...recent.map((entry) => {
+          const source = "source" in entry ? String((entry as AuditEntry & { source?: string }).source || "TaxBee") : "TaxBee";
+          return `${entry.label}: ${entry.path} changed from ${String(entry.oldValue || "blank")} to ${entry.newValue} (${source}).`;
+        }),
+      ].join("\n");
+    }
+
+    if (/\b(save|saving|deduction|80c|80d|reduce tax)\b/.test(normalized)) {
+      const scenarios = scenarioRows
+        .filter((scenario) => scenario.savingVsCurrent > 0)
+        .slice(0, 3);
+      if (!scenarios.length) {
+        return "TaxBee does not see a major deduction-driven saving gap yet. Add or review 80C, 80D, home-loan interest, and salary details so I can estimate impact.";
+      }
+
+      return [
+        "Here are the best visible saving simulations from your current data:",
+        ...scenarios.map(
+          (scenario) =>
+            `${scenario.label}: tax Rs. ${Math.round(scenario.tax).toLocaleString("en-IN")}, saving Rs. ${Math.round(scenario.savingVsCurrent).toLocaleString("en-IN")}. ${scenario.detail}`
+        ),
+      ].join("\n");
+    }
+
+    return null;
+  };
+
   const smartSuggestions = useMemo<SmartSuggestion[]>(() => {
     const isDone = (label: string) =>
       checklist.some((item) => item.label === label && item.done);
     const suggestions: SmartSuggestion[] = [];
+    const draft = storedContext.itrDraft as
+      | {
+          salary?: Record<string, string>;
+          houseProperty?: Record<string, string>;
+          pgbp?: Record<string, string>;
+          capitalGains?: Record<string, string>;
+          otherSources?: Record<string, string>;
+        }
+      | null
+      | undefined;
+    const aisImport = storedContext.aisImport as
+      | { detectedSections?: string[]; totals?: Record<string, number> }
+      | null
+      | undefined;
 
     if (!isDone("PAN/user verified")) {
       suggestions.push({
@@ -381,10 +673,37 @@ export default function BeeAssistant({
       });
     }
 
+    if (aisImport && !isDone("AIS review done")) {
+      suggestions.push({
+        label: "Review AIS import",
+        detail: "Explain mapped heads, warnings, and what to verify.",
+        kind: "message",
+        value: "Run an AIS review. Explain mapped income heads, possible filing warnings, and what I should verify.",
+      });
+    }
+
+    if ((hasAnyAmount(draft?.capitalGains) || hasAnyAmount(draft?.pgbp) || hasAnyAmount(draft?.houseProperty)) && !isDone("Missing documents checked")) {
+      suggestions.push({
+        label: "Check documents",
+        detail: "List documents needed for imported income heads.",
+        kind: "message",
+        value: "Check missing documents based on my imported AIS and ITR draft income heads.",
+      });
+    }
+
     if (!isDone("Income draft started")) {
       suggestions.push({
         label: "Enter income",
-        detail: "Add salary data from Form 16.",
+        detail: "Review imported heads or add missing income data.",
+        kind: "route",
+        value: "/file-your-itr",
+      });
+    }
+
+    if (isDone("AIS imported") && !isDone("All income heads reviewed")) {
+      suggestions.push({
+        label: "Review heads",
+        detail: "Open Start New Filing and verify mapped income heads.",
         kind: "route",
         value: "/file-your-itr",
       });
@@ -402,7 +721,7 @@ export default function BeeAssistant({
     if (!isDone("Regime compared")) {
       suggestions.push({
         label: "Compare regimes",
-        detail: "Estimate old vs new regime using saved data.",
+        detail: "Estimate old vs new regime using imported heads and deductions.",
         kind: "message",
         value: "Compare old and new tax regimes using my saved draft.",
       });
@@ -410,10 +729,10 @@ export default function BeeAssistant({
 
     if (readinessScore >= 60 && !isDone("Final review done")) {
       suggestions.push({
-        label: "Review draft",
-        detail: "Find missing fields and risky entries.",
+        label: "Find filing risks",
+        detail: "Detect AIS income, TDS, and missing-field mismatches.",
         kind: "message",
-        value: "Review my full ITR draft and tell me what is missing.",
+        value: "Run a filing error detector on my AIS import and ITR draft. Tell me missing fields and risky entries.",
       });
     }
 
@@ -436,10 +755,10 @@ export default function BeeAssistant({
     }
 
     return suggestions.slice(0, 3);
-  }, [checklist, pathname, readinessScore]);
+  }, [checklist, pathname, readinessScore, storedContext.aisImport, storedContext.itrDraft]);
 
-  const addAssistantMessage = (text: string) => {
-    const assistantMessage: Message = { sender: "assistant", text };
+  const addAssistantMessage = (text: string, guideOfferId?: string) => {
+    const assistantMessage: Message = { sender: "assistant", text, guideOfferId };
     setMessages((prev) =>
       [...prev, assistantMessage].slice(-MAX_STORED_MESSAGES)
     );
@@ -512,11 +831,16 @@ export default function BeeAssistant({
     }
   };
 
-  const executeActions = (actions: AssistantAction[] = []) => {
-    const actionsNeedingConfirmation = actions.filter(
+  const executeActions = (actions: AssistantAction[] = [], sourceMessage = "") => {
+    const safeActions = actions.filter(
+      (action) =>
+        action.type !== "validation_summary" ||
+        shouldShowValidationSummary(sourceMessage)
+    );
+    const actionsNeedingConfirmation = safeActions.filter(
       (action) => action.type === "set_local_storage"
     );
-    const immediateActions = actions.filter(
+    const immediateActions = safeActions.filter(
       (action) => action.type !== "set_local_storage"
     );
 
@@ -601,6 +925,25 @@ export default function BeeAssistant({
   const handleWorkflowCommand = (userMessage: string) => {
     const normalized = userMessage.toLowerCase();
 
+    if (isTaxHelpOverviewRequest(userMessage)) {
+      addAssistantMessage(
+        [
+          "Here is the simple TaxBee filing path:",
+          "",
+          "1. Verify taxpayer details and PAN.",
+          "2. Import AIS/Form 26AS or enter Form 16 details.",
+          "3. Review salary and other income heads.",
+          "4. Add eligible deductions like 80C, 80D, and home loan interest.",
+          "5. Compare old vs new regime.",
+          "6. Do a final review before filing.",
+          "",
+          "Use the Guide me option below and I will take you through these pages one by one.",
+        ].join("\n"),
+        "file-itr"
+      );
+      return true;
+    }
+
     const requestedGuide = findGuideForMessage(userMessage);
     if (requestedGuide) {
       startGuide(requestedGuide, 0);
@@ -657,6 +1000,12 @@ export default function BeeAssistant({
 
     if (handleWorkflowCommand(userMessage)) return;
 
+    const groundedReply = getGroundedCopilotReply(userMessage);
+    if (groundedReply) {
+      addAssistantMessage(groundedReply);
+      return;
+    }
+
     setLoading(true);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), ASSISTANT_TIMEOUT_MS);
@@ -709,7 +1058,7 @@ export default function BeeAssistant({
             : "Bee Assistant request failed.")
       );
       if (Array.isArray(data.actions)) {
-        executeActions(data.actions);
+        executeActions(data.actions, userMessage);
       }
     } catch (error) {
       console.error("Bee Assistant error:", error);
@@ -750,6 +1099,18 @@ export default function BeeAssistant({
 
   const quickPrompts = [
     {
+      label: "AIS Review",
+      text: "Run an AIS review and explain what was mapped into each income head.",
+    },
+    {
+      label: "Filing Risks",
+      text: "Run a filing error detector on my AIS import and ITR draft.",
+    },
+    {
+      label: "Regime Advice",
+      text: "Compare old and new tax regimes using my saved draft and deductions.",
+    },
+    {
       label: "Start Filing",
       text: "Help me file my ITR step by step.",
     },
@@ -778,6 +1139,41 @@ export default function BeeAssistant({
     activeStepIndex === null || !activeGuide
       ? null
       : activeGuide.steps[activeStepIndex];
+  const dismissGuideOffer = (messageIndex: number) => {
+    setMessages((prev) =>
+      prev.map((message, index) =>
+        index === messageIndex ? { ...message, guideOfferId: undefined } : message
+      )
+    );
+  };
+
+  const renderGuideOffer = (guide: Guide, messageIndex: number) => (
+    <div className="mt-3 rounded-xl border border-yellow-400/30 bg-yellow-400/10 p-3">
+      <div className="text-xs font-semibold text-yellow-300">
+        Guided help available
+      </div>
+      <div className="mt-1 font-bold text-white">{guide.title}</div>
+      <p className="mt-1 text-xs leading-5 text-gray-300">
+        I can open each page and explain what to do there.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          onClick={() => startGuide(guide, 0)}
+          className="rounded bg-yellow-400 px-3 py-1.5 text-xs font-semibold text-black"
+        >
+          Guide me
+        </button>
+        <button
+          type="button"
+          onClick={() => dismissGuideOffer(messageIndex)}
+          className="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-200"
+        >
+          Not now
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -923,9 +1319,9 @@ export default function BeeAssistant({
                   Next best actions
                 </div>
                 <div className="space-y-2">
-                  {smartSuggestions.map((suggestion) => (
+                  {smartSuggestions.map((suggestion, index) => (
                     <button
-                      key={`${suggestion.kind}-${suggestion.value}`}
+                      key={`${suggestion.kind}-${suggestion.value}-${suggestion.label}-${index}`}
                       type="button"
                       onClick={() => runSmartSuggestion(suggestion)}
                       disabled={loading}
@@ -1014,18 +1410,25 @@ export default function BeeAssistant({
               </div>
             )}
 
-            {messages.map((msg, index) => (
-              <div
-                key={`${msg.sender}-${index}`}
-                className={`max-w-[85%] px-4 py-3 text-sm shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${
-                  msg.sender === "user"
-                    ? "ml-auto bg-yellow-400 text-black rounded-2xl rounded-tr-none font-medium"
-                    : "bg-white/10 text-slate-100 rounded-2xl rounded-tl-none border border-white/5"
-                }`}
-              >
-                {renderMessageText(msg.text)}
-              </div>
-            ))}
+            {messages.map((msg, index) => {
+              const messageGuide = msg.guideOfferId
+                ? GUIDES.find((guide) => guide.id === msg.guideOfferId) ?? null
+                : null;
+
+              return (
+                <div
+                  key={`${msg.sender}-${index}`}
+                  className={`max-w-[85%] px-4 py-3 text-sm shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${
+                    msg.sender === "user"
+                      ? "ml-auto bg-yellow-400 text-black rounded-2xl rounded-tr-none font-medium"
+                      : "bg-white/10 text-slate-100 rounded-2xl rounded-tl-none border border-white/5"
+                  }`}
+                >
+                  {renderMessageText(msg.text)}
+                  {messageGuide ? renderGuideOffer(messageGuide, index) : null}
+                </div>
+              );
+            })}
 
             {loading && (
               <div className="flex gap-1 items-center px-4 py-3 bg-white/5 rounded-2xl rounded-tl-none w-fit">

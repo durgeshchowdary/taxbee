@@ -96,6 +96,28 @@ const getValidationAction = (analysis) => {
   };
 };
 
+const shouldShowValidationSummary = (message = "") => {
+  const normalized = message.toLowerCase();
+  return [
+    "review",
+    "check",
+    "validate",
+    "validation",
+    "missing",
+    "incomplete",
+    "risk",
+    "error",
+    "mistake",
+    "issue",
+    "problem",
+    "status",
+    "ready",
+    "health",
+    "final",
+    "filing",
+  ].some((term) => normalized.includes(term));
+};
+
 const parseAmount = (message = "") => {
   const normalized = message.toLowerCase().replace(/,/g, "");
   const matches = [
@@ -221,7 +243,9 @@ export const buildAssistantActions = ({ message, taxAnalysis }) => {
   const actions = [];
   const storageAction = getStorageUpdateAction(message);
   const routeAction = storageAction ? null : getRouteAction(message);
-  const validationAction = getValidationAction(taxAnalysis);
+  const validationAction = shouldShowValidationSummary(message)
+    ? getValidationAction(taxAnalysis)
+    : null;
 
   if (storageAction) actions.push(storageAction);
   if (routeAction) actions.push(routeAction);
