@@ -1011,11 +1011,13 @@ export default function BeeAssistant({
     const timeout = window.setTimeout(() => controller.abort(), ASSISTANT_TIMEOUT_MS);
 
     try {
+      const token = localStorage.getItem("token");
       const res = await fetch("/api/ai/bee-assistant", {
         method: "POST",
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           message: userMessage,

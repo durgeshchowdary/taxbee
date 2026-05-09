@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  TAX_POLICY,
   analyzeTaxContext,
   buildTaxIntelligence,
+  calculateDataQuality,
   calculateNewRegimeTax,
   calculateOldRegimeTax,
   calculateTaxByRegime,
   detectTaxAnomalies,
   generateTaxExplanation,
+  reconcileTaxCredits,
   simulateDeductionScenarios,
 } from "./taxEngine.js";
+
+test("tax policy is centralized for AY 2026-27 assumptions", () => {
+  assert.equal(TAX_POLICY.assessmentYear, "2026-27");
+  assert.equal(TAX_POLICY.deductionCaps.section80C, 150000);
+  assert.equal(TAX_POLICY.rebates.new.taxableIncomeLimit, 1200000);
+  assert.equal(TAX_POLICY.cessRate, 0.04);
+});
 
 test("old regime applies AY 2026-27 slabs, rebate, and cess", () => {
   assert.equal(Math.round(calculateOldRegimeTax(500000)), 0);
@@ -90,6 +100,60 @@ test("anomaly detection flags imported interest missing from declared income", (
   assert.ok(anomalies.flags.some((flag) => flag.title === "Interest income may be incomplete"));
 });
 
+test("tax-credit reconciliation reports refund, due, and low-confidence missing data", () => {
+  const refund = reconcileTaxCredits({
+    estimatedTax: 85000,
+    statementTotals: {
+      tds: 100000,
+      advanceTax: 5000,
+    },
+  });
+  const due = reconcileTaxCredits({
+    estimatedTax: 120000,
+    statementTotals: {
+      tds: 90000,
+    },
+  });
+  const missing = reconcileTaxCredits({ estimatedTax: 0 });
+
+  assert.equal(refund.status, "refund_due");
+  assert.equal(refund.refundDue, 20000);
+  assert.equal(due.status, "tax_due");
+  assert.equal(due.taxDue, 30000);
+  assert.equal(missing.status, "insufficient_data");
+  assert.equal(missing.confidence, "low");
+});
+
+test("data quality distinguishes draft estimates from review-ready returns", () => {
+  const lowQuality = calculateDataQuality({});
+  const highQuality = calculateDataQuality({
+    currentDraft: {
+      salary: {
+        salary17_1: 900000,
+      },
+    },
+    deductions: {
+      section80C: 150000,
+    },
+    aisImport: {
+      totals: {
+        salary: 900000,
+        tds: 50000,
+      },
+    },
+    extractionReview: [
+      {
+        id: "salary",
+        status: "confirmed",
+      },
+    ],
+  });
+
+  assert.equal(lowQuality.confidence, "low");
+  assert.ok(highQuality.score > lowQuality.score);
+  assert.equal(highQuality.confidence, "high");
+});
+
 test("tax intelligence returns explainable health and next-year planning", () => {
   const intelligence = buildTaxIntelligence({
     currentDraft: {
@@ -104,6 +168,8 @@ test("tax intelligence returns explainable health and next-year planning", () =>
   assert.ok(intelligence.health.penalties.length > 0);
   assert.ok(intelligence.nextYear.scenarios.length >= 3);
   assert.ok(Array.isArray(intelligence.recommendations));
+  assert.equal(intelligence.taxCredits.status, "insufficient_data");
+  assert.ok(intelligence.dataQuality.checks.length >= 4);
   assert.ok(intelligence.explanation.taxDrivers.length >= 3);
   assert.ok(intelligence.explanation.regimeComparison.length === 2);
 });

@@ -1,8 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TaxBee - AI-Powered Tax Intelligence
 
-## Getting Started
+TaxBee is a high-precision tax computation and intelligence platform designed for the Indian financial landscape. It simplifies ITR filing using AI-driven suggestions and head-wise income tracking.
 
-First, run the development server:
+## 🚀 Tech Stack
+- **Frontend:** Next.js 15 (App Router), TypeScript, Tailwind CSS
+- **UI Components:** Lucide React, Framer Motion
+- **Math Engine:** High-precision arithmetic via `fraction.js`
+- **Validation:** Zod
+- **State:** React Hooks + Memoization
+
+## 🛠️ Setup Instructions
+
+1. **Clone & Install**
+   ```bash
+   npm install
+   ```
+
+2. **Environment Configuration**
+   Copy `.env.example` to `.env.local` and populate the keys.
+   ```bash
+   cp .env.example .env.local
+   ```
+
+3. **Development**
+   ```bash
+   npm run dev
+   ```
+
+## 🏗️ Architecture
+- `/app`: Next.js 15 App Router (Pages & Layouts)
+- `/lib`: Shared utilities including the Tax Logic Engine
+- `/components`: Reusable UI primitives
+- `/backend`: (Mocked) API layer for JWT and OTP flows
+
+## 🔒 Security Features
+- **Context-Aware AI:** Backend-only AI calls to prevent prompt injection and leakages.
+- **Input Sanitization:** Strict Zod validation on all user entry points.
+- **Precision:** `fraction.js` prevents floating-point errors in tax slabs.
+
+## 🗺️ Roadmap
+- [x] Phase 7: Bee Assistant Contextual Bridge
+- [x] Phase 8: Security Hardening (Zod + Validation)
+- [ ] Phase 12: Real Document OCR (Form 16 / AIS)
+- [ ] Phase 13: Direct e-filing Integration
+
+---
+Built with precision by the TaxBee Team.
 
 ```bash
 npm run dev

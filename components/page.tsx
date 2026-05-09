@@ -1,26 +1,27 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { STORAGE_KEYS } from '@/backend/utils/siteMap';
 
+const getStoredUserName = () => {
+  if (typeof window === 'undefined') return 'Taxpayer';
+
+  try {
+    const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
+    if (!savedUser) return 'Taxpayer';
+
+    const user = JSON.parse(savedUser);
+    return user?.name || 'Taxpayer';
+  } catch (error) {
+    console.error('Failed to parse user data', error);
+    return 'Taxpayer';
+  }
+};
+
 export default function DashboardPage() {
   const router = useRouter();
-  const [userName, setUserName] = useState<string>('Taxpayer');
-
-  useEffect(() => {
-    const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
-    if (savedUser) {
-      try {
-        const user = JSON.parse(savedUser);
-        if (user && user.name) {
-          setUserName(user.name);
-        }
-      } catch (e) {
-        console.error("Failed to parse user data", e);
-      }
-    }
-  }, []);
+  const [userName] = useState<string>(getStoredUserName);
 
   return (
     <div className="min-h-screen bg-slate-50 p-8 text-slate-900">

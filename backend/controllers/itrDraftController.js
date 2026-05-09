@@ -1,4 +1,5 @@
-import ITRDraft from '../models/itrDraft.js';
+import ITRDraft from '../models/ITRDraft.js';
+import { fail } from '../utils/apiResponse.js';
 
 export const saveDraft = async (req, res) => {
   try {
@@ -12,7 +13,7 @@ export const saveDraft = async (req, res) => {
     } = req.body;
 
     if (!userKey) {
-      return res.status(400).json({ message: 'userKey is required' });
+      return fail(res, { status: 400, message: 'userKey is required' });
     }
 
     const draft = await ITRDraft.findOneAndUpdate(
@@ -34,15 +35,14 @@ export const saveDraft = async (req, res) => {
     );
 
     res.status(200).json({
+      success: true,
       message: 'Draft saved successfully',
+      data: { draft },
       draft,
     });
   } catch (error) {
     console.error('saveDraft error:', error);
-    res.status(500).json({
-      message: 'Server error while saving draft',
-      error: error.message,
-    });
+    fail(res, { status: 500, message: 'Server error while saving draft' });
   }
 };
 
@@ -51,21 +51,28 @@ export const getDraft = async (req, res) => {
     const { userKey } = req.params;
 
     if (!userKey) {
-      return res.status(400).json({ message: 'userKey is required' });
+      return fail(res, { status: 400, message: 'userKey is required' });
     }
 
     const draft = await ITRDraft.findOne({ userKey });
 
     if (!draft) {
-      return res.status(200).json({ draft: null });
+      return res.status(200).json({
+        success: true,
+        message: 'Draft not found',
+        data: { draft: null },
+        draft: null,
+      });
     }
 
-    res.status(200).json({ draft });
+    res.status(200).json({
+      success: true,
+      message: 'Draft fetched successfully',
+      data: { draft },
+      draft,
+    });
   } catch (error) {
     console.error('getDraft error:', error);
-    res.status(500).json({
-      message: 'Server error while fetching draft',
-      error: error.message,
-    });
+    fail(res, { status: 500, message: 'Server error while fetching draft' });
   }
 };

@@ -26,6 +26,9 @@ export async function POST(req: NextRequest) {
         headers: {
           "Content-Type": "application/json",
           "X-Request-Id": requestId,
+          ...(req.headers.get("authorization")
+            ? { Authorization: req.headers.get("authorization") as string }
+            : {}),
         },
         body: JSON.stringify(body),
       },
@@ -45,6 +48,10 @@ export async function POST(req: NextRequest) {
       } catch {
         data = { reply: text.slice(0, 300), requestId, degraded: true };
       }
+    }
+
+    if (!data.reply && typeof data.message === "string") {
+      data.reply = data.message;
     }
 
     return NextResponse.json({ ...data, requestId }, { status: res.status });

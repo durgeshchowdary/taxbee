@@ -11,10 +11,7 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
-    "taxbee/**",
     "next-env.d.ts",
-    "*.log",
-    "backend/*.log",
   ]),
 ]);
 

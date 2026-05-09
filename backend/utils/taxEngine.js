@@ -1,5 +1,54 @@
 const FY_LABEL = "FY 2025-26 / AY 2026-27";
 
+export const TAX_POLICY = Object.freeze({
+  financialYear: "2025-26",
+  assessmentYear: "2026-27",
+  label: FY_LABEL,
+  cessRate: 0.04,
+  rebates: {
+    old: { taxableIncomeLimit: 500000 },
+    new: { taxableIncomeLimit: 1200000 },
+  },
+  deductionCaps: {
+    section80C: 150000,
+    healthInsurance80DNonSenior: 25000,
+    homeLoanInterestSelfOccupied: 200000,
+    newRegimeStandardDeduction: 75000,
+  },
+  surcharge: {
+    thresholds: [
+      { income: 5000000, oldRateAbove: 0.1, newRateAbove: 0.1 },
+      { income: 10000000, oldRateAbove: 0.15, newRateAbove: 0.15 },
+      { income: 20000000, oldRateAbove: 0.25, newRateAbove: 0.25 },
+      { income: 50000000, oldRateAbove: 0.37, newRateAbove: 0.25 },
+    ],
+  },
+  slabs: {
+    new: [
+      { from: 0, upTo: 400000, rate: 0 },
+      { from: 400000, upTo: 800000, rate: 0.05 },
+      { from: 800000, upTo: 1200000, rate: 0.1 },
+      { from: 1200000, upTo: 1600000, rate: 0.15 },
+      { from: 1600000, upTo: 2000000, rate: 0.2 },
+      { from: 2000000, upTo: 2400000, rate: 0.25 },
+      { from: 2400000, rate: 0.3 },
+    ],
+    old: [
+      { from: 0, upTo: 250000, rate: 0 },
+      { from: 250000, upTo: 500000, rate: 0.05 },
+      { from: 500000, upTo: 1000000, rate: 0.2 },
+      { from: 1000000, rate: 0.3 },
+    ],
+  },
+});
+
+const {
+  deductionCaps,
+  rebates,
+  slabs: taxSlabs,
+  surcharge: surchargePolicy,
+} = TAX_POLICY;
+
 const toNumber = (value) => {
   const number = Number(value || 0);
   return Number.isFinite(number) ? number : 0;
@@ -28,42 +77,24 @@ const calculateSlabTax = (income, slabs) => {
 };
 
 const getSurchargeRate = (income, regime) => {
-  if (income > 50000000) return regime === "old" ? 0.37 : 0.25;
-  if (income > 20000000) return 0.25;
-  if (income > 10000000) return 0.15;
-  if (income > 5000000) return 0.1;
-  return 0;
+  const threshold = surchargeThresholds
+    .slice()
+    .reverse()
+    .find((item) => income > item.income);
+
+  if (!threshold) return 0;
+  return regime === "old" ? threshold.oldRateAbove : threshold.newRateAbove;
 };
 
-const surchargeThresholds = [
-  { income: 5000000, rateAbove: 0.1 },
-  { income: 10000000, rateAbove: 0.15 },
-  { income: 20000000, rateAbove: 0.25 },
-  { income: 50000000, oldRateAbove: 0.37, newRateAbove: 0.25 },
-];
-
-const newRegimeSlabs = [
-  { from: 0, upTo: 400000, rate: 0 },
-  { from: 400000, upTo: 800000, rate: 0.05 },
-  { from: 800000, upTo: 1200000, rate: 0.1 },
-  { from: 1200000, upTo: 1600000, rate: 0.15 },
-  { from: 1600000, upTo: 2000000, rate: 0.2 },
-  { from: 2000000, upTo: 2400000, rate: 0.25 },
-  { from: 2400000, rate: 0.3 },
-];
-
-const oldRegimeSlabs = [
-  { from: 0, upTo: 250000, rate: 0 },
-  { from: 250000, upTo: 500000, rate: 0.05 },
-  { from: 500000, upTo: 1000000, rate: 0.2 },
-  { from: 1000000, rate: 0.3 },
-];
+const surchargeThresholds = surchargePolicy.thresholds;
+const newRegimeSlabs = taxSlabs.new;
+const oldRegimeSlabs = taxSlabs.old;
 
 export const calculateTaxByRegime = (taxableIncome, regime = "new") => {
   const income = clamp(toNumber(taxableIncome));
   const normalizedRegime = regime === "old" ? "old" : "new";
   const slabs = normalizedRegime === "old" ? oldRegimeSlabs : newRegimeSlabs;
-  const rebateLimit = normalizedRegime === "old" ? 500000 : 1200000;
+  const rebateLimit = rebates[normalizedRegime].taxableIncomeLimit;
 
   let taxBeforeRebate = calculateSlabTax(income, slabs);
   if (income <= rebateLimit) taxBeforeRebate = 0;
@@ -73,7 +104,7 @@ export const calculateTaxByRegime = (taxableIncome, regime = "new") => {
 
   const threshold = surchargeThresholds.find((item) => {
     const rateAbove =
-      normalizedRegime === "old" ? item.oldRateAbove ?? item.rateAbove : item.newRateAbove ?? item.rateAbove;
+      normalizedRegime === "old" ? item.oldRateAbove : item.newRateAbove;
     return income > item.income && surchargeRate === rateAbove;
   });
 
@@ -82,7 +113,7 @@ export const calculateTaxByRegime = (taxableIncome, regime = "new") => {
     taxAfterSurcharge = Math.min(taxAfterSurcharge, thresholdTax + income - threshold.income);
   }
 
-  const cess = taxAfterSurcharge * 0.04;
+  const cess = taxAfterSurcharge * TAX_POLICY.cessRate;
   const totalTax = taxAfterSurcharge + cess;
 
   return {
@@ -169,12 +200,21 @@ export const analyzeTaxContext = (context = {}) => {
     capitalGainsIncome +
     otherSourcesIncome;
 
-  const section80C = clamp(toNumber(deductions.section80C), 0, 150000);
-  const healthInsurance80D = clamp(toNumber(deductions.healthInsurance), 0, 25000);
-  const homeLoanInterest = clamp(toNumber(deductions.homeLoanInterest), 0, 200000);
+  const section80C = clamp(toNumber(deductions.section80C), 0, deductionCaps.section80C);
+  const healthInsurance80D = clamp(
+    toNumber(deductions.healthInsurance),
+    0,
+    deductionCaps.healthInsurance80DNonSenior
+  );
+  const homeLoanInterest = clamp(
+    toNumber(deductions.homeLoanInterest),
+    0,
+    deductionCaps.homeLoanInterestSelfOccupied
+  );
   const oldRegimeDeductions = section80C + healthInsurance80D + homeLoanInterest;
 
-  const newRegimeStandardDeduction = grossSalary > 0 ? 75000 : 0;
+  const newRegimeStandardDeduction =
+    grossSalary > 0 ? deductionCaps.newRegimeStandardDeduction : 0;
   const oldRegimeTaxableIncome = clamp(grossTotalIncome - oldRegimeDeductions);
   const newRegimeTaxableIncome = clamp(grossTotalIncome - newRegimeStandardDeduction);
 
@@ -208,16 +248,19 @@ export const analyzeTaxContext = (context = {}) => {
   if (grossTotalIncome < 0) {
     warnings.push("Total income is negative. Confirm losses and supporting documents.");
   }
-  if (toNumber(deductions.section80C) > 150000) {
+  if (toNumber(deductions.section80C) > deductionCaps.section80C) {
     warnings.push("80C is capped at Rs. 1,50,000 in this estimate.");
   }
-  if (toNumber(deductions.healthInsurance) > 25000) {
+  if (toNumber(deductions.healthInsurance) > deductionCaps.healthInsurance80DNonSenior) {
     warnings.push("80D is capped at Rs. 25,000 here for a non-senior citizen estimate.");
   }
 
   const recommendations = [];
-  const remaining80C = Math.max(0, 150000 - section80C);
-  const remaining80D = Math.max(0, 25000 - healthInsurance80D);
+  const remaining80C = Math.max(0, deductionCaps.section80C - section80C);
+  const remaining80D = Math.max(
+    0,
+    deductionCaps.healthInsurance80DNonSenior - healthInsurance80D
+  );
   const oldTaxWithFull80C = calculateTaxByRegime(
     clamp(grossTotalIncome - (oldRegimeDeductions + remaining80C)),
     "old"
@@ -283,6 +326,137 @@ export const analyzeTaxContext = (context = {}) => {
 const getTaxStatement = (context = {}) =>
   context.aisImport || context.taxStatement || context.form26as || null;
 
+const readTaxCredits = (statementTotals = {}, manualCredits = {}) => ({
+  tds: toNumber(statementTotals.tds ?? manualCredits.tds),
+  advanceTax: toNumber(statementTotals.advanceTax ?? manualCredits.advanceTax),
+  selfAssessmentTax: toNumber(
+    statementTotals.selfAssessmentTax ?? manualCredits.selfAssessmentTax
+  ),
+});
+
+export const reconcileTaxCredits = ({
+  estimatedTax = 0,
+  taxPaid,
+  statementTotals = {},
+  manualCredits = {},
+} = {}) => {
+  const credits = readTaxCredits(statementTotals, manualCredits);
+  const itemizedCredits =
+    credits.tds + credits.advanceTax + credits.selfAssessmentTax;
+  const totalCredits =
+    taxPaid === undefined || taxPaid === null ? itemizedCredits : toNumber(taxPaid);
+  const roundedTax = Math.round(clamp(estimatedTax));
+  const roundedCredits = Math.round(clamp(totalCredits));
+  const netPosition = roundedCredits - roundedTax;
+  const hasCreditData =
+    roundedCredits > 0 ||
+    ["tds", "advanceTax", "selfAssessmentTax"].some(
+      (key) => statementTotals[key] !== undefined || manualCredits[key] !== undefined
+    );
+
+  const reasons = [];
+  if (credits.tds > 0) reasons.push(`TDS credits considered: ${formatRupees(credits.tds)}.`);
+  if (credits.advanceTax > 0) {
+    reasons.push(`Advance tax considered: ${formatRupees(credits.advanceTax)}.`);
+  }
+  if (credits.selfAssessmentTax > 0) {
+    reasons.push(
+      `Self-assessment tax considered: ${formatRupees(credits.selfAssessmentTax)}.`
+    );
+  }
+  if (!hasCreditData) {
+    reasons.push("No tax-credit data is available from AIS/Form 26AS yet.");
+  }
+  if (roundedTax === 0) {
+    reasons.push("Estimated payable tax is zero from the current draft data.");
+  }
+
+  return {
+    estimatedTax: roundedTax,
+    totalCredits: roundedCredits,
+    tds: Math.round(credits.tds),
+    advanceTax: Math.round(credits.advanceTax),
+    selfAssessmentTax: Math.round(credits.selfAssessmentTax),
+    refundDue: Math.max(0, netPosition),
+    taxDue: Math.max(0, -netPosition),
+    netPosition,
+    status: !hasCreditData
+      ? "insufficient_data"
+      : netPosition >= 0
+        ? "refund_due"
+        : "tax_due",
+    confidence: hasCreditData ? "medium" : "low",
+    reasons,
+  };
+};
+
+export const calculateDataQuality = (
+  context = {},
+  analysis = analyzeTaxContext(context),
+  anomalies = detectTaxAnomalies({ ...context, analysis })
+) => {
+  const statement = getTaxStatement(context);
+  const extractionReview = Array.isArray(context.extractionReview)
+    ? context.extractionReview
+    : [];
+  const confirmedExtractions = extractionReview.filter(
+    (item) =>
+      item.status === "confirmed" ||
+      item.status === "edited" ||
+      item.status === "overridden"
+  ).length;
+  const highRiskFlags = anomalies.flags.filter((flag) => flag.severity === "high").length;
+
+  const checks = [
+    {
+      id: "income",
+      label: "Income mapped",
+      complete: analysis.income.grossTotalIncome > 0,
+      action: "Enter salary, other income, or imported statement income.",
+    },
+    {
+      id: "taxStatement",
+      label: "AIS/Form 26AS imported",
+      complete: Boolean(statement),
+      action: "Import a tax statement to reconcile reported income and TDS.",
+    },
+    {
+      id: "deductions",
+      label: "Deductions reviewed",
+      complete:
+        analysis.deductions.oldRegimeDeductions > 0 ||
+        analysis.tax.betterRegime === "new",
+      action: "Review 80C, 80D, and home-loan entries before final filing.",
+    },
+    {
+      id: "extractionReview",
+      label: "Extracted fields verified",
+      complete:
+        extractionReview.length > 0 && confirmedExtractions === extractionReview.length,
+      action: "Confirm or edit each extracted field before trusting document data.",
+    },
+    {
+      id: "risk",
+      label: "No high-risk mismatches",
+      complete: highRiskFlags === 0,
+      action: "Resolve high-risk salary, TDS, or draft consistency mismatches.",
+    },
+  ];
+
+  const completed = checks.filter((check) => check.complete).length;
+  const score = Math.round((completed / checks.length) * 100);
+
+  return {
+    score,
+    confidence: score >= 80 ? "high" : score >= 50 ? "medium" : "low",
+    completed,
+    total: checks.length,
+    confirmedExtractions,
+    totalExtractions: extractionReview.length,
+    checks,
+  };
+};
+
 const addPenalty = (penalties, condition, points, reason, action) => {
   if (!condition) return;
   penalties.push({ points, reason, action });
@@ -296,12 +470,20 @@ const anomalyPoints = (severity) => {
 
 const buildOldRegimeTax = ({ income, section80C = 0, healthInsurance80D = 0, homeLoanInterest = 0 }) =>
   calculateTaxByRegime(
-    clamp(income - clamp(section80C, 0, 150000) - clamp(healthInsurance80D, 0, 25000) - clamp(homeLoanInterest, 0, 200000)),
+    clamp(
+      income -
+        clamp(section80C, 0, deductionCaps.section80C) -
+        clamp(healthInsurance80D, 0, deductionCaps.healthInsurance80DNonSenior) -
+        clamp(homeLoanInterest, 0, deductionCaps.homeLoanInterestSelfOccupied)
+    ),
     "old"
   ).totalTax;
 
 const buildNewRegimeTax = ({ income, hasSalary = false }) =>
-  calculateTaxByRegime(clamp(income - (hasSalary ? 75000 : 0)), "new").totalTax;
+  calculateTaxByRegime(
+    clamp(income - (hasSalary ? deductionCaps.newRegimeStandardDeduction : 0)),
+    "new"
+  ).totalTax;
 
 export const simulateDeductionScenarios = (context = {}) => {
   const analysis = context.analysis || analyzeTaxContext(context);
@@ -321,8 +503,8 @@ export const simulateDeductionScenarios = (context = {}) => {
   const oldRegimeOptimizedTax = Math.round(
     buildOldRegimeTax({
       income,
-      section80C: 150000,
-      healthInsurance80D: 25000,
+      section80C: deductionCaps.section80C,
+      healthInsurance80D: deductionCaps.healthInsurance80DNonSenior,
       homeLoanInterest: currentHomeLoan,
     })
   );
@@ -346,14 +528,14 @@ export const simulateDeductionScenarios = (context = {}) => {
       tax: Math.min(
         buildOldRegimeTax({
           income,
-          section80C: 150000,
+          section80C: deductionCaps.section80C,
           healthInsurance80D: current80D,
           homeLoanInterest: currentHomeLoan,
         }),
         buildNewRegimeTax({ income, hasSalary })
       ),
       regime: "Best of old/new",
-      detail: `Adds ${formatRupees(Math.max(0, 150000 - current80C))} of remaining 80C capacity.`,
+      detail: `Adds ${formatRupees(Math.max(0, deductionCaps.section80C - current80C))} of remaining 80C capacity.`,
     },
     {
       id: "full80c80d",
@@ -361,8 +543,8 @@ export const simulateDeductionScenarios = (context = {}) => {
       tax: Math.min(
         buildOldRegimeTax({
           income,
-          section80C: 150000,
-          healthInsurance80D: 25000,
+          section80C: deductionCaps.section80C,
+          healthInsurance80D: deductionCaps.healthInsurance80DNonSenior,
           homeLoanInterest: currentHomeLoan,
         }),
         buildNewRegimeTax({ income, hasSalary })
@@ -518,10 +700,10 @@ export const calculateTaxHealthScore = (context = {}) => {
   );
   addPenalty(
     penalties,
-    current80C < 150000 && analysis.income.grossTotalIncome > 500000,
+    current80C < deductionCaps.section80C && analysis.income.grossTotalIncome > 500000,
     10,
     "80C deduction capacity is underused",
-    `Remaining 80C capacity is ${formatRupees(150000 - current80C)}.`
+    `Remaining 80C capacity is ${formatRupees(deductionCaps.section80C - current80C)}.`
   );
   addPenalty(
     penalties,
@@ -594,7 +776,7 @@ export const planNextYearTax = (context = {}) => {
       tax: Math.min(
         buildOldRegimeTax({
           income: projectedIncome,
-          section80C: 150000,
+          section80C: deductionCaps.section80C,
           healthInsurance80D: current80D,
           homeLoanInterest: currentHomeLoan,
         }),
@@ -608,8 +790,8 @@ export const planNextYearTax = (context = {}) => {
       tax: Math.min(
         buildOldRegimeTax({
           income: projectedIncome,
-          section80C: 150000,
-          healthInsurance80D: 25000,
+          section80C: deductionCaps.section80C,
+          healthInsurance80D: deductionCaps.healthInsurance80DNonSenior,
           homeLoanInterest: currentHomeLoan,
         }),
         buildNewRegimeTax({ income: projectedIncome, hasSalary })
@@ -735,6 +917,17 @@ export const buildTaxIntelligence = (context = {}) => {
   const health = calculateTaxHealthScore({ ...context, analysis, anomalies });
   const savings = simulateDeductionScenarios({ ...context, analysis });
   const nextYear = planNextYearTax({ ...context, analysis });
+  const bestEstimatedTax = Math.min(
+    analysis.tax.oldRegimeEstimatedTax,
+    analysis.tax.newRegimeEstimatedTax
+  );
+  const statement = getTaxStatement(context);
+  const taxCredits = reconcileTaxCredits({
+    estimatedTax: bestEstimatedTax,
+    statementTotals: statement?.totals || {},
+    manualCredits: context.taxCredits,
+  });
+  const dataQuality = calculateDataQuality(context, analysis, anomalies);
   const explanation = generateTaxExplanation({
     ...context,
     analysis,
@@ -749,6 +942,8 @@ export const buildTaxIntelligence = (context = {}) => {
     savings,
     anomalies,
     nextYear,
+    taxCredits,
+    dataQuality,
     explanation,
     recommendations: [
       ...savings.scenarios

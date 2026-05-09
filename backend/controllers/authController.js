@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { sendEmail } from '../utils/sendEmail.js';
+import { fail } from '../utils/apiResponse.js';
 
 const createOtp = () => crypto.randomInt(100000, 1000000).toString();
 
@@ -38,28 +39,36 @@ export const signup = async (req, res) => {
 
   try {
     if (!name || !email || !password) {
-      return res.status(400).json({ message: 'Name, email, and password are required' });
+      return fail(res, { status: 400, message: 'Name, email, and password are required' });
     }
 
     if (password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+      return fail(res, { status: 400, message: 'Password must be at least 6 characters' });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return fail(res, { status: 400, message: 'Please enter a valid email address' });
+    }
+
     const existingUser = await User.findOne({ email: normalizedEmail });
 
     if (existingUser) {
-      return res.status(400).json({ message: 'User already exists. Please login.' });
+      return fail(res, { status: 400, message: 'User already exists. Please login.' });
     }
 
     await User.create({ name, email: normalizedEmail, password, isVerified: false });
 
     res.status(201).json({
+      success: true,
       message: 'Account created successfully. Please login to verify your first login OTP.',
+      data: {
+        email: normalizedEmail,
+      },
       email: normalizedEmail,
     });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+  } catch {
+    fail(res, { status: 500, message: 'Server error while creating account' });
   }
 };
 
@@ -68,20 +77,20 @@ export const verifyOtp = async (req, res) => {
 
   try {
     if (!email || !otp) {
-      return res.status(400).json({ message: 'Email and OTP are required' });
+      return fail(res, { status: 400, message: 'Email and OTP are required' });
     }
 
     const user = await User.findOne({ email: email.toLowerCase().trim() }).select(
       '+otpHash +otpExpiresAt'
     );
 
-    if (!user) return res.status(400).json({ message: 'Invalid verification request' });
-    if (user.isVerified) return res.status(400).json({ message: 'First login is already verified' });
+    if (!user) return fail(res, { status: 400, message: 'Invalid verification request' });
+    if (user.isVerified) return fail(res, { status: 400, message: 'First login is already verified' });
     if (!user.otpHash || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
-      return res.status(400).json({ message: 'OTP expired. Please login again to get a new OTP.' });
+      return fail(res, { status: 400, message: 'OTP expired. Please login again to get a new OTP.' });
     }
     if (user.otpHash !== hashOtp(otp)) {
-      return res.status(400).json({ message: 'Invalid OTP' });
+      return fail(res, { status: 400, message: 'Invalid OTP' });
     }
 
     user.isVerified = true;
@@ -92,12 +101,17 @@ export const verifyOtp = async (req, res) => {
     const token = createToken(user);
 
     res.status(200).json({
+      success: true,
       message: 'First login verified successfully',
+      data: {
+        user: safeUser(user),
+        token,
+      },
       user: safeUser(user),
       token,
     });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+  } catch {
+    fail(res, { status: 500, message: 'Server error while verifying OTP' });
   }
 };
 
@@ -106,17 +120,26 @@ export const login = async (req, res) => {
   const { email, password } = req.body;
 
   try {
+    if (!email || !password) {
+      return fail(res, { status: 400, message: 'Email and password are required' });
+    }
+
     const user = await User.findOne({ email: email?.toLowerCase().trim() });
-    if (!user) return res.status(400).json({ message: 'Invalid credentials' });
+    if (!user) return fail(res, { status: 400, message: 'Invalid credentials' });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+    if (!isMatch) return fail(res, { status: 400, message: 'Invalid credentials' });
 
     if (!user.isVerified) {
       await sendVerificationOtp(user);
 
       return res.status(403).json({
+        success: false,
         message: 'First login OTP sent to your email.',
+        data: {
+          requiresVerification: true,
+          email: user.email,
+        },
         requiresVerification: true,
         email: user.email,
       });
@@ -124,8 +147,17 @@ export const login = async (req, res) => {
 
     const token = createToken(user);
 
-    res.status(200).json({ message: 'Login successful', user: safeUser(user), token });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        user: safeUser(user),
+        token,
+      },
+      user: safeUser(user),
+      token,
+    });
+  } catch {
+    fail(res, { status: 500, message: 'Server error while logging in' });
   }
 };

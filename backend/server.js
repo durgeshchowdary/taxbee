@@ -8,6 +8,8 @@ import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import itrDraftRoutes from "./routes/itrDraftRoutes.js";
 import aiRoutes from "./routes/aiRoutes.js";
+import { errorHandler, notFound } from "./middleware/errorMiddleware.js";
+import { getAllowedOrigins, validateEnv } from "./utils/env.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,7 +22,14 @@ const app = express();
 
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin(origin, callback) {
+      const allowedOrigins = getAllowedOrigins();
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Origin is not allowed by CORS"));
+    },
     credentials: true,
   })
 );
@@ -28,15 +37,25 @@ app.use(
 app.use(express.json({ limit: "256kb" }));
 
 app.get("/", (req, res) => {
-  res.send("Backend is working");
+  res.json({
+    success: true,
+    message: "TaxBee backend is running",
+    data: {
+      service: "taxbee-backend",
+    },
+  });
 });
 
 app.get("/health", (req, res) => {
   const readyState = mongoose.connection.readyState;
 
   res.status(readyState === 1 ? 200 : 503).json({
+    success: readyState === 1,
+    message: readyState === 1 ? "Service healthy" : "Service degraded",
+    data: {
     status: readyState === 1 ? "ok" : "degraded",
     database: ["disconnected", "connected", "connecting", "disconnecting"][readyState],
+    },
   });
 });
 
@@ -44,16 +63,14 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/itr-draft", itrDraftRoutes);
 app.use("/api/ai", aiRoutes);
+app.use(notFound);
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
-  if (!process.env.MONGO_URI) {
-    console.error("Missing MONGO_URI in backend/.env");
-    process.exit(1);
-  }
-
   try {
+    validateEnv();
     await mongoose.connect(process.env.MONGO_URI, {
       serverSelectionTimeoutMS: 10000,
     });

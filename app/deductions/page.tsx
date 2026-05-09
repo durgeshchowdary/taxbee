@@ -10,28 +10,36 @@ type Deductions = {
   homeLoanInterest: string;
 };
 
+const defaultDeductions: Deductions = {
+  section80C: '',
+  healthInsurance: '',
+  homeLoanInterest: '',
+};
+
+function readStoredDeductions(): Deductions {
+  if (typeof window === 'undefined') {
+    return defaultDeductions;
+  }
+
+  try {
+    const saved = localStorage.getItem(STORAGE_KEYS.DEDUCTIONS);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object') {
+        return { ...defaultDeductions, ...parsed };
+      }
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_KEYS.DEDUCTIONS);
+  }
+
+  return defaultDeductions;
+}
+
 export default function DeductionsPage() {
   const router = useRouter();
   const [highlightField, setHighlightField] = useState<string | null>(null);
-  const [deductions, setDeductions] = useState<Deductions>({
-    section80C: '',
-    healthInsurance: '',
-    homeLoanInterest: '',
-  });
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.DEDUCTIONS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') {
-          setDeductions(prev => ({ ...prev, ...parsed }));
-        }
-      }
-    } catch {
-      localStorage.removeItem(STORAGE_KEYS.DEDUCTIONS);
-    }
-  }, []);
+  const [deductions, setDeductions] = useState<Deductions>(readStoredDeductions);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const next = { 

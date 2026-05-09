@@ -15,6 +15,14 @@ const modelCache = new Map();
 const responseCache = new Map();
 const inFlightResponses = new Map();
 
+const sendAssistantJson = (res, status, payload, message) =>
+  res.status(status).json({
+    success: status < 400,
+    message: message || payload.reply || "Bee Assistant response",
+    data: payload,
+    ...payload,
+  });
+
 const trimText = (value = "", maxLength = MAX_MESSAGE_CHARS) =>
   String(value).slice(0, maxLength).trim();
 
@@ -214,23 +222,38 @@ export const getBeeAssistantReply = async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!userMessage) {
-      return res.status(400).json({ reply: "Please send a message.", requestId });
+      return sendAssistantJson(
+        res,
+        400,
+        { reply: "Please send a message.", requestId },
+        "Please send a message."
+      );
     }
 
     if (String(message).length > MAX_MESSAGE_CHARS) {
-      return res.status(413).json({
-        reply: "That message is too long for the assistant. Please shorten it and try again.",
-        requestId,
-        retryable: true,
-      });
+      return sendAssistantJson(
+        res,
+        413,
+        {
+          reply: "That message is too long for the assistant. Please shorten it and try again.",
+          requestId,
+          retryable: true,
+        },
+        "Assistant message is too long"
+      );
     }
 
     if (!apiKey) {
-      return res.status(500).json({
-        reply: "Gemini API key is not configured.",
-        requestId,
-        degraded: true,
-      });
+      return sendAssistantJson(
+        res,
+        500,
+        {
+          reply: "Gemini API key is not configured.",
+          requestId,
+          degraded: true,
+        },
+        "Gemini API key is not configured"
+      );
     }
 
     const taxAnalysis = analyzeTaxContext(context);
@@ -240,7 +263,7 @@ export const getBeeAssistantReply = async (req, res) => {
     const fastReply = getFastActionReply({ userMessage, actions });
 
     if (fastReply) {
-      return res.status(200).json({
+      return sendAssistantJson(res, 200, {
         reply: fastReply,
         memorySummary: safeMemorySummary,
         actions,
@@ -320,7 +343,7 @@ ${section ? `Current TaxBee section: ${section}.` : ""}`;
     const cachedResponse = getCachedResponse(cacheKey);
 
     if (cachedResponse) {
-      return res.status(200).json({
+      return sendAssistantJson(res, 200, {
         ...cachedResponse,
         requestId,
         cached: true,
@@ -329,7 +352,7 @@ ${section ? `Current TaxBee section: ${section}.` : ""}`;
 
     if (inFlightResponses.has(cacheKey)) {
       const sharedResponse = await inFlightResponses.get(cacheKey);
-      return res.status(200).json({
+      return sendAssistantJson(res, 200, {
         ...sharedResponse,
         requestId,
         shared: true,
@@ -382,25 +405,35 @@ ${section ? `Current TaxBee section: ${section}.` : ""}`;
       setCachedResponse(cacheKey, responsePayload);
     }
 
-    return res
-      .status(200)
-      .json({ ...responsePayload, requestId, cached: false });
+    return sendAssistantJson(res, 200, { ...responsePayload, requestId, cached: false });
   } catch (error) {
     console.error(`Bee Assistant error [${requestId}]:`, error);
     const message =
       error instanceof Error ? error.message : "Server error. Please try again.";
 
-    return res.status(500).json({ reply: message, requestId, retryable: true });
+    return sendAssistantJson(
+      res,
+      500,
+      { reply: message, requestId, retryable: true },
+      "Bee Assistant server error"
+    );
   }
 };
 
 export const getBeeAssistantHealth = (req, res) => {
-  res.status(200).json({
+  const data = {
     status: "ok",
     modelCacheSize: modelCache.size,
     responseCacheSize: responseCache.size,
     inFlightResponses: inFlightResponses.size,
     responseCacheTtlMs: RESPONSE_CACHE_TTL_MS,
     maxResponseCacheEntries: MAX_RESPONSE_CACHE_ENTRIES,
+  };
+
+  res.status(200).json({
+    success: true,
+    message: "Bee Assistant healthy",
+    data,
+    ...data,
   });
 };
