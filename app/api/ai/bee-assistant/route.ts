@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authForwardHeaders, BACKEND_URL } from "@/app/api/_utils/backend";
 
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:5000";
 const BACKEND_TIMEOUT_MS = 35_000;
 
 const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs: number) => {
@@ -26,9 +26,7 @@ export async function POST(req: NextRequest) {
         headers: {
           "Content-Type": "application/json",
           "X-Request-Id": requestId,
-          ...(req.headers.get("authorization")
-            ? { Authorization: req.headers.get("authorization") as string }
-            : {}),
+          ...authForwardHeaders(req),
         },
         body: JSON.stringify(body),
       },

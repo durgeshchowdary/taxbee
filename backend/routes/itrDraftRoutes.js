@@ -1,9 +1,21 @@
 import express from 'express';
-import { saveDraft, getDraft } from '../controllers/itrDraftController.js';
+import {
+  getAuthenticatedDraft,
+  getDraft,
+  saveAuthenticatedDraft,
+  saveDraft,
+} from '../controllers/itrDraftController.js';
+import { requireAuth } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-router.post('/', saveDraft);
-router.get('/:userKey', getDraft);
+router
+  .route('/')
+  .get(requireAuth, getAuthenticatedDraft)
+  .put(requireAuth, saveAuthenticatedDraft)
+  .post(requireAuth, saveAuthenticatedDraft);
+
+router.post('/legacy', requireAuth, saveDraft);
+router.get('/:userKey', requireAuth, getDraft);
 
 export default router;

@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
-import { STORAGE_KEYS } from '@/backend/utils/siteMap';
 import BeeAssistantProvider from '@/components/BeeAssistantProvider';
+import { statusForTaxLoadFailure } from '@/app/_utils/taxStatus';
+import { loadSession, logoutSession } from '@/app/_utils/authSession';
 
 type DraftHead = Record<string, string | number | undefined>;
 type DraftState = {
@@ -16,16 +17,6 @@ type DraftState = {
 };
 type IncomeIcon = 'salary' | 'house' | 'business' | 'gains' | 'other';
 type SidebarIcon = 'dashboard' | 'file' | 'savings' | 'documents' | 'help';
-
-const readJson = <T,>(key: string, fallback: T): T => {
-  try {
-    const saved = localStorage.getItem(key);
-    return saved ? (JSON.parse(saved) as T) : fallback;
-  } catch {
-    localStorage.removeItem(key);
-    return fallback;
-  }
-};
 
 const toNumber = (value: unknown) => {
   const number = Number(String(value ?? '').replace(/,/g, ''));
@@ -40,17 +31,40 @@ export default function FileTaxPage() {
   const pathname = usePathname();
   const [draft, setDraft] = useState<DraftState>({});
   const [userName, setUserName] = useState('User');
+  const [status, setStatus] = useState('');
 
   useEffect(() => {
-    const loadDraft = () => {
-      setDraft(readJson<DraftState>(STORAGE_KEYS.ITR_DRAFT, {}));
-      const user = readJson<{ name?: string } | null>(STORAGE_KEYS.USER, null);
-      setUserName(user?.name || 'User');
+    const loadDraft = async () => {
+      const session = await loadSession();
+      if (!session) {
+        setStatus('Please login to load income data.');
+        return;
+      }
+      setUserName(session.user?.name || 'User');
+
+      try {
+        const res = await fetch('/api/tax-context');
+        const data = await res.json();
+        if (!res.ok || data?.success === false) {
+          setStatus(
+            statusForTaxLoadFailure({
+              res,
+              data,
+              emptyMessage: 'No data yet',
+              fallbackMessage: 'Could not load income data from MongoDB.',
+            })
+          );
+          return;
+        }
+        setDraft(data.data?.draft || {});
+        setUserName(data.data?.user?.name || 'User');
+        setStatus(data.data?.hasTaxData ? '' : 'No data yet');
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : 'Could not load income data from MongoDB.');
+      }
     };
 
-    loadDraft();
-    window.addEventListener('taxbee:storage-updated', loadDraft);
-    return () => window.removeEventListener('taxbee:storage-updated', loadDraft);
+    void loadDraft();
   }, []);
 
   const incomeCards = useMemo(() => {
@@ -147,14 +161,11 @@ export default function FileTaxPage() {
 
   const totalIncome = incomeCards.reduce((sum, item) => sum + item.amount, 0);
   const completedHeads = incomeCards.filter((item) => Math.abs(item.amount) > 0).length;
-  const progress = Math.max(18, Math.round((completedHeads / incomeCards.length) * 100));
+  const progress = Math.round((completedHeads / incomeCards.length) * 100);
 
   const handleLogout = () => {
-    localStorage.removeItem(STORAGE_KEYS.USER);
-    localStorage.removeItem(STORAGE_KEYS.AIS_IMPORT);
-    localStorage.removeItem(STORAGE_KEYS.VERIFIED_PAN);
-    localStorage.removeItem(STORAGE_KEYS.TAXPAYER_PROFILE);
-    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    void logoutSession();
     router.push('/login');
   };
 
@@ -333,6 +344,7 @@ export default function FileTaxPage() {
             <span className="mx-2">|</span>
             Step 1 of 4
           </p>
+          {status && <p className="mt-2 text-sm font-semibold text-amber-700">{status}</p>}
         </div>
 
         <section className="mb-6 grid grid-cols-3 gap-4">

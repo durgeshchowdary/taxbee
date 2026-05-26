@@ -39,7 +39,20 @@ export default function SignupPage() {
       if (!res.ok) {
         setError(data.message || 'Signup failed');
       } else {
-        router.push('/login?registered=true');
+        const pendingEmail = data.email || data.data?.email || form.email;
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem('pendingVerificationEmail', pendingEmail);
+          window.sessionStorage.setItem(
+            'pendingVerificationMessage',
+            data.data?.emailDelivery?.message || data.message || 'OTP sent to your email.'
+          );
+          if (data.devOtp || data.data?.devOtp) {
+            window.sessionStorage.setItem('pendingVerificationDevOtp', data.devOtp || data.data?.devOtp);
+          } else {
+            window.sessionStorage.removeItem('pendingVerificationDevOtp');
+          }
+        }
+        router.push(`/verify-email?email=${encodeURIComponent(pendingEmail)}`);
       }
     } catch {
       setError('Server connection error');

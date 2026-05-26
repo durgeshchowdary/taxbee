@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import BeeAssistantProvider from '@/components/BeeAssistantProvider';
-import { STORAGE_KEYS } from '@/backend/utils/siteMap';
+import { statusForTaxLoadFailure } from '@/app/_utils/taxStatus';
 
 type SidebarIcon = 'dashboard' | 'file' | 'savings' | 'documents' | 'help';
 type ExtractionReviewRecord = {
@@ -49,20 +49,40 @@ export default function DocumentsPage() {
   const pathname = usePathname();
   const [aisImport, setAisImport] = useState<AisImport>(null);
   const [records, setRecords] = useState<ExtractionReviewRecord[]>([]);
+  const [status, setStatus] = useState('');
+  const [statusTone, setStatusTone] = useState<'neutral' | 'warning'>('neutral');
 
   useEffect(() => {
-    const refresh = () => {
+    const refresh = async () => {
       try {
-        setAisImport(JSON.parse(localStorage.getItem(STORAGE_KEYS.AIS_IMPORT) || 'null'));
-        setRecords(JSON.parse(localStorage.getItem(STORAGE_KEYS.EXTRACTION_REVIEW) || '[]'));
-      } catch {
+        const res = await fetch('/api/tax-context');
+        const data = await res.json();
+        if (!res.ok || data?.success === false) {
+          setAisImport(null);
+          setRecords([]);
+          setStatus(
+            statusForTaxLoadFailure({
+              res,
+              data,
+              emptyMessage: 'Upload AIS, Form 26AS, or Form 16 to begin extraction.',
+              fallbackMessage: 'Could not load imported documents from MongoDB.',
+            })
+          );
+          setStatusTone(res.status >= 500 || data?.success === false ? 'warning' : 'neutral');
+          return;
+        }
+        setAisImport(data.data?.aisImport || null);
+        setRecords(data.data?.extractionReview || []);
+        setStatus(data.data?.imports?.length || data.data?.extractionReview?.length ? '' : 'Upload AIS, Form 26AS, or Form 16 to begin extraction.');
+        setStatusTone('neutral');
+      } catch (error) {
         setAisImport(null);
         setRecords([]);
+        setStatus(error instanceof Error ? error.message : 'Could not load imported documents from MongoDB.');
+        setStatusTone('warning');
       }
     };
-    refresh();
-    window.addEventListener('taxbee:storage-updated', refresh);
-    return () => window.removeEventListener('taxbee:storage-updated', refresh);
+    void refresh();
   }, []);
 
   const totals = aisImport?.totals || {};
@@ -93,6 +113,11 @@ export default function DocumentsPage() {
           <div>
             <h1 className="text-4xl font-bold text-gray-900">Documents</h1>
             <p className="mt-2 text-lg text-gray-500">Review imported documents, extracted fields, confidence, and confirmation status.</p>
+            {status && (
+              <p className={`mt-2 text-sm font-semibold ${statusTone === 'warning' ? 'text-amber-700' : 'text-gray-500'}`}>
+                {status}
+              </p>
+            )}
           </div>
           <button onClick={() => router.push('/import-data')} className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white hover:bg-blue-700">Import document</button>
         </div>

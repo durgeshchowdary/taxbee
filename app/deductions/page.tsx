@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { STORAGE_KEYS } from '@/backend/utils/siteMap';
+import { statusForTaxLoadFailure } from '@/app/_utils/taxStatus';
 
 type Deductions = {
   section80C: string;
@@ -16,30 +17,14 @@ const defaultDeductions: Deductions = {
   homeLoanInterest: '',
 };
 
-function readStoredDeductions(): Deductions {
-  if (typeof window === 'undefined') {
-    return defaultDeductions;
-  }
-
-  try {
-    const saved = localStorage.getItem(STORAGE_KEYS.DEDUCTIONS);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (parsed && typeof parsed === 'object') {
-        return { ...defaultDeductions, ...parsed };
-      }
-    }
-  } catch {
-    localStorage.removeItem(STORAGE_KEYS.DEDUCTIONS);
-  }
-
-  return defaultDeductions;
-}
-
 export default function DeductionsPage() {
   const router = useRouter();
   const [highlightField, setHighlightField] = useState<string | null>(null);
-  const [deductions, setDeductions] = useState<Deductions>(readStoredDeductions);
+  const [deductions, setDeductions] = useState<Deductions>(defaultDeductions);
+  const [status, setStatus] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  const authHeaders = () => ({ 'Content-Type': 'application/json' });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const next = { 
@@ -47,24 +32,35 @@ export default function DeductionsPage() {
       [e.target.name as keyof Deductions]: e.target.value 
     };
     setDeductions(next);
-    localStorage.setItem(STORAGE_KEYS.DEDUCTIONS, JSON.stringify(next));
-    window.dispatchEvent(new CustomEvent('taxbee:storage-updated'));
   };
 
   useEffect(() => {
-    const syncDeductions = () => {
+    const loadDeductions = async () => {
+      const headers = authHeaders();
       try {
-        const saved = localStorage.getItem(STORAGE_KEYS.DEDUCTIONS);
-        if (saved) {
-          setDeductions((prev) => ({ ...prev, ...JSON.parse(saved || '{}') }));
+        const res = await fetch('/api/deductions', { headers });
+        const data = await res.json();
+        if (!res.ok || data?.success === false) {
+          setStatus(
+            statusForTaxLoadFailure({
+              res,
+              data,
+              emptyMessage: 'No data yet',
+              fallbackMessage: 'Could not load deductions from MongoDB.',
+            })
+          );
+          return;
         }
-      } catch {
-        localStorage.removeItem(STORAGE_KEYS.DEDUCTIONS);
+        setDeductions({ ...defaultDeductions, ...(data.data?.deductions || data.deductions || {}) });
+        setStatus(data.data?.emptyState ? 'No data yet' : '');
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : 'Could not load deductions from MongoDB.');
+      } finally {
+        setIsLoading(false);
       }
     };
 
-    window.addEventListener('taxbee:storage-updated', syncDeductions);
-    return () => window.removeEventListener('taxbee:storage-updated', syncDeductions);
+    void loadDeductions();
   }, []);
 
   useEffect(() => {
@@ -104,8 +100,28 @@ export default function DeductionsPage() {
     } text-slate-700 placeholder:text-slate-400`;
 
   const handleSave = () => {
-    localStorage.setItem(STORAGE_KEYS.DEDUCTIONS, JSON.stringify(deductions));
-    alert('Deductions saved successfully!');
+    const save = async () => {
+      const headers = authHeaders();
+      if (!headers) {
+        setStatus('Please login to save deductions.');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/deductions', {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ deductions }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Could not save deductions');
+        setStatus('Deductions saved to MongoDB.');
+      } catch {
+        setStatus('Failed to save deductions to MongoDB.');
+      }
+    };
+
+    void save();
   };
 
   return (
@@ -119,6 +135,8 @@ export default function DeductionsPage() {
         </header>
 
         <div className="bg-white shadow-xl shadow-slate-200/50 rounded-3xl p-8 border border-slate-100">
+          {isLoading && <p className="mb-4 text-sm font-semibold text-slate-500">Loading deductions...</p>}
+          {status && <p className="mb-4 text-sm font-semibold text-blue-700">{status}</p>}
           <div className="space-y-6">
             <div>
               <label className="block mb-2 text-sm font-semibold text-slate-700">Section 80C Investments (₹)</label>

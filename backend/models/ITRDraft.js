@@ -81,9 +81,17 @@ const ITRDraftSchema = new mongoose.Schema(
       dividendIncome: { type: String, default: '' },
       otherIncome: { type: String, default: '' },
     },
+
+    deductions: { type: mongoose.Schema.Types.Mixed, default: {} },
+    taxpayerProfile: { type: mongoose.Schema.Types.Mixed, default: {} },
+    aisImport: { type: mongoose.Schema.Types.Mixed, default: null },
+    extractionReview: { type: mongoose.Schema.Types.Mixed, default: [] },
   },
   { timestamps: true }
 );
+
+ITRDraftSchema.index({ userKey: 1 }, { unique: true });
+ITRDraftSchema.index({ updatedAt: -1 });
 
 const ITRDraft = mongoose.model('ITRDraft', ITRDraftSchema);
 

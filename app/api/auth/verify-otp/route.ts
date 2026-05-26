@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:5000";
+import { authCookieOptions, BACKEND_URL, readBackendJson } from "@/app/api/_utils/backend";
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,18 +10,17 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
 
-    const text = await res.text();
-    let data = { message: "Backend returned an empty response." };
+    const data = await readBackendJson(res);
 
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = { message: text.slice(0, 300) };
-      }
+    const response = NextResponse.json(data, { status: res.status });
+    const authData = data as { token?: unknown; data?: { token?: unknown } };
+    const token = authData.token ?? authData.data?.token;
+
+    if (res.ok && typeof token === "string") {
+      response.cookies.set("auth_token", token, authCookieOptions);
     }
 
-    return NextResponse.json(data, { status: res.status });
+    return response;
   } catch (error) {
     console.error("OTP verification proxy error:", error);
     return NextResponse.json(

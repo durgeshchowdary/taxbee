@@ -1,4 +1,5 @@
 import { fail } from "../utils/apiResponse.js";
+import { logger } from "../utils/safeLogger.js";
 
 export const notFound = (req, res) =>
   fail(res, {
@@ -14,16 +15,12 @@ export const errorHandler = (error, _req, res, _next) => {
   const safeStatus = status >= 400 && status < 600 ? status : 500;
   const isProduction = process.env.NODE_ENV === "production";
 
-  console.error("API error:", {
-    message: error.message,
-    status: safeStatus,
-    stack: isProduction ? undefined : error.stack,
-  });
+  logger.error("API error", error, { status: safeStatus });
 
   return fail(res, {
     status: safeStatus,
     message:
-      safeStatus === 500 && isProduction
+      (safeStatus === 500 || error.expose === false) && isProduction
         ? "Internal server error"
         : error.message || "Internal server error",
     code: error.code,

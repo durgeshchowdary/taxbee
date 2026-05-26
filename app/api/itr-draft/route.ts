@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:5000";
+import { authForwardHeaders, BACKEND_URL } from "@/app/api/_utils/backend";
 
 const readBackendJson = async (res: Response) => {
   const text = await res.text();
@@ -19,9 +18,12 @@ const readBackendJson = async (res: Response) => {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const res = await fetch(`${BACKEND_URL}/api/itr-draft`, {
+    const res = await fetch(`${BACKEND_URL}/api/itr-draft${req.nextUrl.search}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...authForwardHeaders(req),
+      },
       body: JSON.stringify(body),
     });
 
@@ -29,7 +31,45 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     console.error("ITR draft save proxy error:", error);
     return NextResponse.json(
-      { message: "Backend is not reachable. Your draft is still saved locally." },
+      { success: false, message: "Backend is not reachable. Your draft was not saved to MongoDB." },
+      { status: 503 }
+    );
+  }
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/itr-draft${req.nextUrl.search}`, {
+      headers: authForwardHeaders(req),
+    });
+
+    return NextResponse.json(await readBackendJson(res), { status: res.status });
+  } catch (error) {
+    console.error("ITR draft load proxy error:", error);
+    return NextResponse.json(
+      { message: "Backend is not reachable.", data: { draft: null }, draft: null },
+      { status: 503 }
+    );
+  }
+}
+
+export async function PUT(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const res = await fetch(`${BACKEND_URL}/api/itr-draft${req.nextUrl.search}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...authForwardHeaders(req),
+      },
+      body: JSON.stringify(body),
+    });
+
+    return NextResponse.json(await readBackendJson(res), { status: res.status });
+  } catch (error) {
+    console.error("ITR draft save proxy error:", error);
+    return NextResponse.json(
+      { message: "Backend is not reachable. Your draft was not saved to MongoDB." },
       { status: 503 }
     );
   }

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:5000";
+import { BACKEND_URL, readBackendJson } from "@/app/api/_utils/backend";
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,16 +10,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(body),
     });
 
-    const text = await res.text();
-    let data = { message: "Backend returned an empty response." };
-
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = { message: text.slice(0, 300) };
-      }
-    }
+    const data = await readBackendJson(res);
 
     return NextResponse.json(data, { status: res.status });
   } catch (error) {

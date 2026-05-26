@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:5000";
+import { authForwardHeaders, BACKEND_URL } from "@/app/api/_utils/backend";
 
 const readBackendJson = async (res: Response) => {
   const text = await res.text();
@@ -23,7 +22,8 @@ export async function GET(
   try {
     const { userKey } = await ctx.params;
     const res = await fetch(
-      `${BACKEND_URL}/api/itr-draft/${encodeURIComponent(userKey)}`
+      `${BACKEND_URL}/api/itr-draft/${encodeURIComponent(userKey)}`,
+      { headers: authForwardHeaders(_req) }
     );
 
     return NextResponse.json(await readBackendJson(res), { status: res.status });

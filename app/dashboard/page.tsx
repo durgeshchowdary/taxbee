@@ -6,9 +6,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { STORAGE_KEYS } from "@/backend/utils/siteMap";
 import { analyzeTaxContext, buildTaxIntelligence } from "@/backend/utils/taxEngine";
 import BeeAssistantProvider from "@/components/BeeAssistantProvider";
+import { loadSession, logoutSession } from "@/app/_utils/authSession";
 
 type User = {
   name: string;
+  email?: string;
+  role?: string;
+  isVerified?: boolean;
 };
 
 type AmountMap = Record<string, string | number | undefined>;
@@ -31,6 +35,32 @@ type AisImport = {
     other?: number;
   };
 } | null;
+type DashboardPayload = {
+  user?: User;
+  hasTaxData?: boolean;
+  draft?: DraftState;
+  deductions?: AmountMap;
+  aisImport?: AisImport;
+  imports?: unknown[];
+  extractionReview?: ExtractionReviewRecord[];
+  taxpayerProfile?: {
+    panMasked?: string;
+  };
+  intelligence?: ReturnType<typeof buildTaxIntelligence>;
+  taxIntelligence?: {
+    calculationStatus?: {
+      calculationStatus: string;
+      reason: string;
+    };
+  };
+  message?: string;
+};
+
+type DashboardResponse = {
+  success?: boolean;
+  message?: string;
+  data?: DashboardPayload | null;
+};
 type SavingCard = {
   title: string;
   detail: string;
@@ -75,21 +105,150 @@ type ExtractionReviewRecord = {
 type QuickActionIcon = "itr" | "import" | "download" | "help";
 type SidebarIcon = "dashboard" | "file" | "savings" | "documents" | "help";
 
-const readJson = <T,>(key: string, fallback: T): T => {
-  try {
-    const saved = localStorage.getItem(key);
-    return saved ? (JSON.parse(saved) as T) : fallback;
-  } catch {
-    localStorage.removeItem(key);
-    return fallback;
-  }
-};
-
 const formatMoney = (value: number) =>
   `Rs. ${Math.round(value || 0).toLocaleString("en-IN")}`;
 
-const isValidPan = (value: string | null) =>
-  Boolean(value && /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(value.trim().toUpperCase()));
+const hasAnyAmount = (value?: AmountMap) =>
+  Boolean(
+    value &&
+      Object.values(value).some((item) => Number(String(item ?? "").replace(/,/g, "")) > 0)
+  );
+
+const countNamedAmounts = (value: AmountMap | undefined, keys: string[]) =>
+  value
+    ? keys.filter((key) => Number(String(value[key] ?? "").replace(/,/g, "")) > 0).length
+    : 0;
+
+const SALARY_INCOME_KEYS = [
+  "salary17_1",
+  "perquisites17_2",
+  "profits17_3",
+  "grossSalary",
+  "basicSalary",
+  "dearnessAllowance",
+  "bonusCommission",
+  "hraReceived",
+  "ltaReceived",
+  "overtimeAllowance",
+  "advanceSalary",
+  "arrearsOfSalary",
+  "leaveSalaryDuringService",
+  "pensionUncommuted",
+  "feesWagesAnnuity",
+  "otherAllowances",
+  "rentFreeAccommodation",
+  "carFacility",
+  "interestFreeLoan",
+  "esop",
+  "freeGasElectricityWater",
+  "freeEducation",
+  "householdStaff",
+  "creditCardExpenses",
+  "clubExpenses",
+  "giftTaxablePortion",
+  "useTransferOfAssets",
+  "employerContribution",
+  "otherPerquisites",
+  "compensationOnTermination",
+  "retrenchmentCompensation",
+  "keymanInsurance",
+  "otherReceipts",
+];
+const HOUSE_PROPERTY_INCOME_KEYS = ["annualRent"];
+const PGBP_INCOME_KEYS = ["businessReceipts", "otherBusinessIncome"];
+const CAPITAL_GAINS_INCOME_KEYS = ["saleValue"];
+const OTHER_SOURCES_INCOME_KEYS = ["savingsInterest", "fdInterest", "dividendIncome", "otherIncome"];
+
+const hasDraftAmounts = (draft?: DraftState) =>
+  Boolean(
+    countNamedAmounts(draft?.salary, SALARY_INCOME_KEYS) ||
+      countNamedAmounts(draft?.houseProperty, HOUSE_PROPERTY_INCOME_KEYS) ||
+      countNamedAmounts(draft?.pgbp, PGBP_INCOME_KEYS) ||
+      countNamedAmounts(draft?.capitalGains, CAPITAL_GAINS_INCOME_KEYS) ||
+      countNamedAmounts(draft?.otherSources, OTHER_SOURCES_INCOME_KEYS)
+  );
+
+const nonZeroIncomeCount = (draft?: DraftState) =>
+  countNamedAmounts(draft?.salary, SALARY_INCOME_KEYS) +
+  countNamedAmounts(draft?.houseProperty, HOUSE_PROPERTY_INCOME_KEYS) +
+  countNamedAmounts(draft?.pgbp, PGBP_INCOME_KEYS) +
+  countNamedAmounts(draft?.capitalGains, CAPITAL_GAINS_INCOME_KEYS) +
+  countNamedAmounts(draft?.otherSources, OTHER_SOURCES_INCOME_KEYS);
+
+const draftSectionCount = (draft?: DraftState) =>
+  [
+    countNamedAmounts(draft?.salary, SALARY_INCOME_KEYS),
+    countNamedAmounts(draft?.houseProperty, HOUSE_PROPERTY_INCOME_KEYS),
+    countNamedAmounts(draft?.pgbp, PGBP_INCOME_KEYS),
+    countNamedAmounts(draft?.capitalGains, CAPITAL_GAINS_INCOME_KEYS),
+    countNamedAmounts(draft?.otherSources, OTHER_SOURCES_INCOME_KEYS),
+  ].filter((count) => count > 0).length;
+
+const hasAisImportData = (item?: AisImport) =>
+  Boolean(
+    item &&
+      hasAnyAmount(item.totals)
+  );
+
+const hasImportActivity = (item: unknown) => {
+  if (!item || typeof item !== "object") return false;
+  const record = item as { totals?: AmountMap; extractedFields?: Array<{ path?: string }> };
+  return hasAnyAmount(record.totals) || Boolean(record.extractedFields?.some((field) => String(field.path || "").trim()));
+};
+
+const countImportActivity = (imports: unknown[] = []) =>
+  imports.filter(hasImportActivity).length;
+
+const hasMeaningfulTaxActivity = ({
+  draft,
+  deductions,
+  aisImport,
+  extractionReview = [],
+  imports = [],
+}: {
+  draft?: DraftState;
+  deductions?: AmountMap;
+  aisImport?: AisImport;
+  extractionReview?: ExtractionReviewRecord[];
+  imports?: unknown[];
+}) =>
+  Boolean(
+    countImportActivity(imports) > 0 ||
+      hasAisImportData(aisImport) ||
+      extractionReview.some((record) => record.status === "confirmed" || record.status === "overridden") ||
+      hasAnyAmount(deductions) ||
+      hasDraftAmounts(draft)
+  );
+
+const buildMeaningfulActivityDiagnostics = ({
+  draft,
+  deductions,
+  aisImport,
+  extractionReview = [],
+  imports = [],
+}: {
+  draft?: DraftState;
+  deductions?: AmountMap;
+  aisImport?: AisImport;
+  extractionReview?: ExtractionReviewRecord[];
+  imports?: unknown[];
+}) => ({
+  importsCount: countImportActivity(imports),
+  hasAisImportData: hasAisImportData(aisImport),
+  confirmedFieldCount: extractionReview.filter(
+    (record) => record.status === "confirmed" || record.status === "overridden"
+  ).length,
+  nonZeroIncomeCount: nonZeroIncomeCount(draft),
+  deductionActivity: hasAnyAmount(deductions),
+  draftSectionCount: draftSectionCount(draft),
+});
+
+const staleEmptyDraftLoadPattern = /Could not load ITR draft from MongoDB|database connection is healthy/i;
+
+const isStaleEmptyDraftLoadMessage = (message = "") =>
+  staleEmptyDraftLoadPattern.test(message);
+
+const EMPTY_DASHBOARD_MESSAGE = "Import documents or start your ITR draft to begin calculations.";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -98,43 +257,107 @@ export default function DashboardPage() {
   const [showCalculation, setShowCalculation] = useState(false);
 
   const [user, setUser] = useState<User | null>(null);
+  const [dashboardError, setDashboardError] = useState("");
   const [selectedYear] = useState("2024-25");
   const [verifiedPan, setVerifiedPan] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState>({});
   const [deductions, setDeductions] = useState<AmountMap>({});
   const [aisImport, setAisImport] = useState<AisImport>(null);
+  const [importCount, setImportCount] = useState(0);
   const [extractionReview, setExtractionReview] = useState<ExtractionReviewRecord[]>([]);
+  const [backendIntelligence, setBackendIntelligence] = useState<ReturnType<typeof buildTaxIntelligence> | null>(null);
+  const [calculationStatusReason, setCalculationStatusReason] = useState("");
 
   useEffect(() => {
-    const calculateTax = () => {
+    const calculateTax = async () => {
       try {
-        const token = localStorage.getItem("token");
-        const storedUserStr = localStorage.getItem(STORAGE_KEYS.USER);
-        const storedUser = storedUserStr ? JSON.parse(storedUserStr) : null;
-        setUser(token && storedUser ? storedUser : null);
+        const session = await loadSession();
+        if (!session) {
+          setUser(null);
+          return;
+        }
+        if (session.requiresVerification) {
+          router.replace("/verify-email");
+          return;
+        }
+        if (!session.allowedPortals.includes("taxpayer")) {
+          router.replace(session.allowedPortals.includes("reviewer") ? "/reviewer/workspaces" : "/login");
+          return;
+        }
+        setUser(session.user);
 
-        const storedPan = localStorage.getItem(STORAGE_KEYS.VERIFIED_PAN);
-        if (isValidPan(storedPan)) {
-          setVerifiedPan(storedPan?.trim().toUpperCase() || null);
-        } else {
-          setVerifiedPan(null);
-          if (storedPan) localStorage.removeItem(STORAGE_KEYS.VERIFIED_PAN);
+        let backendPayload: DashboardPayload | null = null;
+
+        try {
+          setDashboardError("");
+          const res = await fetch("/api/dashboard");
+            const body = (await res.json()) as DashboardResponse;
+
+            if (res.ok && body?.success !== false && body?.data) {
+              backendPayload = body.data as DashboardPayload;
+              setDashboardError("");
+              if (process.env.NODE_ENV === "development") {
+                const diagnostics = buildMeaningfulActivityDiagnostics({
+                  draft: backendPayload.draft,
+                  deductions: backendPayload.deductions,
+                  aisImport: backendPayload.aisImport,
+                  extractionReview: backendPayload.extractionReview,
+                  imports: backendPayload.imports,
+                });
+                console.debug("taxbee.dashboard.meaningfulActivity", {
+                  hasTaxData: backendPayload.hasTaxData,
+                  meaningfulActivity: hasMeaningfulTaxActivity({
+                    draft: backendPayload.draft,
+                    deductions: backendPayload.deductions,
+                    aisImport: backendPayload.aisImport,
+                    extractionReview: backendPayload.extractionReview,
+                    imports: backendPayload.imports,
+                  }),
+                  ...diagnostics,
+                });
+              }
+              if (
+                backendPayload.hasTaxData === false ||
+                !hasMeaningfulTaxActivity({
+                  draft: backendPayload.draft,
+                  deductions: backendPayload.deductions,
+                  aisImport: backendPayload.aisImport,
+                  extractionReview: backendPayload.extractionReview,
+                  imports: backendPayload.imports,
+                })
+              ) {
+                setCalculationStatusReason(EMPTY_DASHBOARD_MESSAGE);
+              }
+            } else {
+              setDashboardError(body?.message || "Dashboard backend returned an error.");
+            }
+        } catch {
+          setDashboardError("Dashboard backend is not reachable. Tax data cannot be loaded.");
         }
 
-        const savedDraft = readJson<DraftState>(STORAGE_KEYS.ITR_DRAFT, {});
-        const savedDeductions = readJson<AmountMap>(STORAGE_KEYS.DEDUCTIONS, {});
-        const savedAisImport = readJson<AisImport>(STORAGE_KEYS.AIS_IMPORT, null);
-        const savedExtractionReview = readJson<ExtractionReviewRecord[]>(
-          STORAGE_KEYS.EXTRACTION_REVIEW,
-          []
+        setDraft(backendPayload?.draft || {});
+        setDeductions(backendPayload?.deductions || {});
+        setAisImport(backendPayload?.aisImport || null);
+        setImportCount(countImportActivity(backendPayload?.imports || []));
+        setExtractionReview(backendPayload?.extractionReview || []);
+        setVerifiedPan(backendPayload?.taxpayerProfile?.panMasked || null);
+        setBackendIntelligence(backendPayload?.intelligence || null);
+        setCalculationStatusReason(
+          backendPayload?.hasTaxData === false ||
+            !hasMeaningfulTaxActivity({
+              draft: backendPayload?.draft,
+              deductions: backendPayload?.deductions,
+              aisImport: backendPayload?.aisImport,
+              extractionReview: backendPayload?.extractionReview,
+              imports: backendPayload?.imports,
+            })
+            ? EMPTY_DASHBOARD_MESSAGE
+            : backendPayload?.taxIntelligence?.calculationStatus?.reason || backendPayload?.message || ""
         );
-        setDraft(savedDraft);
-        setDeductions(savedDeductions);
-        setAisImport(savedAisImport);
-        setExtractionReview(savedExtractionReview);
 
       } catch (error) {
         console.error("Error calculating tax summary", error);
+        setDashboardError("Dashboard data could not be loaded.");
       } finally {
         setIsInitializing(false);
       }
@@ -143,7 +366,7 @@ export default function DashboardPage() {
     calculateTax();
     window.addEventListener("taxbee:storage-updated", calculateTax);
     return () => window.removeEventListener("taxbee:storage-updated", calculateTax);
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (!isInitializing && !user) {
@@ -153,10 +376,7 @@ export default function DashboardPage() {
 
   const handleLogout = () => {
     localStorage.removeItem(STORAGE_KEYS.USER);
-    localStorage.removeItem(STORAGE_KEYS.AIS_IMPORT);
-    localStorage.removeItem(STORAGE_KEYS.VERIFIED_PAN);
-    localStorage.removeItem(STORAGE_KEYS.TAXPAYER_PROFILE);
-    localStorage.removeItem("token");
+    void logoutSession();
     setUser(null);
     setVerifiedPan(null);
     router.push("/login");
@@ -167,35 +387,47 @@ export default function DashboardPage() {
     [draft, deductions]
   );
 
-  const intelligence = useMemo(
+  const fallbackIntelligence = useMemo(
     () => buildTaxIntelligence({ currentDraft: draft, deductions, aisImport }),
     [aisImport, deductions, draft]
   );
+  const intelligence = backendIntelligence || fallbackIntelligence;
 
   const bestCurrentTax = Math.min(
     intelligence.analysis.tax.oldRegimeEstimatedTax,
     intelligence.analysis.tax.newRegimeEstimatedTax
   );
+  const hasMeaningfulActivity = hasMeaningfulTaxActivity({
+    draft,
+    deductions,
+    aisImport,
+    extractionReview,
+    imports: Array.from({ length: importCount }, () => ({ extractedFields: [{ path: "import" }] })),
+  });
+  const hasTaxData = hasMeaningfulActivity;
+  const visibleDashboardError =
+    !hasTaxData && isStaleEmptyDraftLoadMessage(dashboardError) ? "" : dashboardError;
+  const visibleCalculationStatusReason =
+    !hasMeaningfulActivity
+      ? EMPTY_DASHBOARD_MESSAGE
+      : !hasTaxData && isStaleEmptyDraftLoadMessage(calculationStatusReason)
+      ? EMPTY_DASHBOARD_MESSAGE
+      : calculationStatusReason;
+  const canEstimateTax = intelligence.analysis.income.grossTotalIncome > 0;
+  const canReconcileRefund = canEstimateTax && Boolean(aisImport?.totals?.tds);
   const taxPaid = Math.round(Number(aisImport?.totals?.tds || 0));
   const refundOrDue = taxPaid - bestCurrentTax;
-  const completionPercent = Math.round(
-    ([
-      Boolean(aisImport),
-      intelligence.analysis.income.grossTotalIncome > 0,
-      intelligence.analysis.deductions.oldRegimeDeductions > 0,
-      intelligence.anomalies.flags.length === 0,
-    ].filter(Boolean).length /
-      4) *
-      100
-  );
+  const completionPercent = hasTaxData ? intelligence.dataQuality.score : 0;
   const healthTone =
-    intelligence.health.score >= 80
-      ? "text-green-600"
-      : intelligence.health.score >= 60
-        ? "text-blue-600"
-        : intelligence.health.score >= 40
-          ? "text-orange-500"
-          : "text-red-600";
+    !hasTaxData
+      ? "text-gray-500"
+      : intelligence.health.score >= 80
+        ? "text-green-600"
+        : intelligence.health.score >= 60
+          ? "text-blue-600"
+          : intelligence.health.score >= 40
+            ? "text-orange-500"
+            : "text-red-600";
   const refundTone = refundOrDue >= 0 ? "text-green-600" : "text-red-600";
   const refundLabel = refundOrDue >= 0 ? "Refund" : "Tax Due";
   const chosenRegime =
@@ -215,33 +447,47 @@ export default function DashboardPage() {
     {
       title: "Review income",
       status: analysis.income.grossTotalIncome > 0 ? "Started" : "Pending",
-      detail: `${formatMoney(analysis.income.grossTotalIncome)} mapped so far`,
+      detail: analysis.income.grossTotalIncome > 0
+        ? `${formatMoney(analysis.income.grossTotalIncome)} mapped so far`
+        : "No confirmed income values are available yet",
       route: "/file-your-itr",
     },
     {
       title: "Claim deductions",
       status: analysis.deductions.oldRegimeDeductions > 0 ? "Started" : "Open",
-      detail: `${formatMoney(analysis.deductions.oldRegimeDeductions)} deductions entered`,
+      detail: analysis.deductions.oldRegimeDeductions > 0
+        ? `${formatMoney(analysis.deductions.oldRegimeDeductions)} deductions entered`
+        : "Add eligible deductions only when you have proof",
       route: "/deductions",
     },
     {
       title: "Final check",
-      status: intelligence.anomalies.score >= 35 ? "Review" : "Clear",
-      detail: intelligence.anomalies.flags[0]?.message || "No major issue found",
+      status: !hasTaxData ? "Locked" : intelligence.anomalies.score >= 35 ? "Review" : "Clear",
+      detail: !hasTaxData
+        ? "Import or enter tax data before TaxBee can run a final check"
+        : intelligence.anomalies.flags[0]?.message || "No major issue found",
       route: "/dashboard",
     },
   ];
 
-  const savingCards = intelligence.recommendations.filter(
+  const savingCards = canEstimateTax ? intelligence.recommendations.filter(
     (item): item is SavingCard => Boolean(item)
-  ).slice(0, 3);
-  const planningScenarios = intelligence.nextYear.scenarios.slice(0, 4);
+  ).slice(0, 3) : [];
+  const planningScenarios = canEstimateTax ? intelligence.nextYear.scenarios.slice(0, 4) : [];
   const taxDrivers = intelligence.explanation.taxDrivers as TaxDriver[];
   const regimeComparison = intelligence.explanation.regimeComparison as RegimeComparisonRow[];
   const scenarioComparison = intelligence.explanation.scenarioComparison as ScenarioComparisonRow[];
   const riskBreakdown = intelligence.explanation.riskBreakdown as RiskBreakdownRow[];
   const unconfirmedExtractions = extractionReview.filter((record) => record.status === "extracted");
-  const bestAction = unconfirmedExtractions.length
+  const bestAction = !hasTaxData
+    ? {
+        title: "Connect or import your tax data",
+        detail: "TaxBee has no verified income, deduction, AIS/Form 26AS, or ITR draft values yet, so it will not show fake tax estimates.",
+        route: "/import-data",
+        saving: 0,
+        riskReduction: 0,
+      }
+    : unconfirmedExtractions.length
     ? {
         title: "Confirm extracted tax fields",
         detail: `${unconfirmedExtractions.length} extracted field${unconfirmedExtractions.length === 1 ? "" : "s"} still need human review before TaxBee should fully trust them.`,
@@ -294,10 +540,11 @@ export default function DashboardPage() {
     { icon: "help" as QuickActionIcon, label: "Assistance Filing", route: "/help", color: "bg-red-500" },
   ];
 
-  const suggestions =
-    savingCards.length > 0
+  const suggestions = canEstimateTax
+    ? savingCards.length > 0
       ? savingCards.map((item) => item.detail)
-      : intelligence.analysis.recommendations.slice(0, 3);
+      : intelligence.analysis.recommendations.slice(0, 3)
+    : [];
 
   const activities = [
     {
@@ -322,10 +569,12 @@ export default function DashboardPage() {
     },
     {
       text:
-        intelligence.anomalies.flags.length > 0
+        !hasTaxData
+          ? "Final risk check unavailable until data is imported"
+          : intelligence.anomalies.flags.length > 0
           ? `${intelligence.anomalies.flags.length} review item(s) pending`
           : "No major review flags",
-      status: intelligence.anomalies.flags.length > 0 ? "pending" : "done",
+      status: hasTaxData && intelligence.anomalies.flags.length === 0 ? "done" : "pending",
     },
   ];
 
@@ -532,6 +781,12 @@ export default function DashboardPage() {
             <span className="mx-2">|</span>
             PAN: {verifiedPan || "Not Verified"}
           </p>
+          {visibleDashboardError && (
+            <p className="mt-2 text-sm font-semibold text-amber-700">{visibleDashboardError}</p>
+          )}
+          {!visibleDashboardError && visibleCalculationStatusReason && (
+            <p className="mt-2 text-sm font-semibold text-amber-700">{visibleCalculationStatusReason}</p>
+          )}
         </div>
 
         <div className="mb-6 grid grid-cols-3 gap-4">
@@ -543,19 +798,21 @@ export default function DashboardPage() {
 
           <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
             <p className="text-xl font-semibold text-gray-700">
-              Tax Health Score: <span className={healthTone}>{intelligence.health.score}/100</span>
+              Tax Health Score: <span className={healthTone}>{hasTaxData ? `${intelligence.health.score}/100` : "Not calculated"}</span>
             </p>
             <p className="mt-2 text-sm leading-6 text-gray-500">
-              {intelligence.health.summary}
+              {hasTaxData ? intelligence.health.summary : "Import AIS/Form 26AS or save an ITR draft before TaxBee can score filing health."}
             </p>
           </div>
 
           <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
             <p className="text-xl font-semibold text-gray-700">
-              {refundLabel}: <span className={refundTone}>{formatMoney(Math.abs(refundOrDue))}</span>
+              Refund / Due: <span className={canReconcileRefund ? refundTone : "text-gray-500"}>{canReconcileRefund ? formatMoney(Math.abs(refundOrDue)) : "Not calculated"}</span>
             </p>
             <p className="mt-2 text-sm leading-6 text-gray-500">
-              Based on imported TDS of {formatMoney(taxPaid)} and best-regime tax estimate.
+              {canReconcileRefund
+                ? `Based on imported TDS of ${formatMoney(taxPaid)} and best-regime tax estimate.`
+                : "Needs both an income-based tax estimate and imported TDS credits."}
             </p>
           </div>
         </div>
@@ -639,15 +896,21 @@ export default function DashboardPage() {
             <div>
               <p className="mb-2 text-lg text-gray-500">Tax Payable:</p>
               <p className="text-4xl font-bold text-gray-800">
-                {formatMoney(bestCurrentTax)}
+                {canEstimateTax ? formatMoney(bestCurrentTax) : "Not calculated"}
               </p>
-              <p className="mt-1 text-sm font-semibold text-blue-700">{chosenRegime} regime estimate</p>
+              <p className="mt-1 text-sm font-semibold text-blue-700">
+                {canEstimateTax ? `${chosenRegime} regime estimate` : "Add income to estimate"}
+              </p>
             </div>
 
             <div>
               <p className="mb-2 text-lg text-gray-500">Refund / Due:</p>
-              <p className={`text-4xl font-bold ${refundTone}`}>{formatMoney(Math.abs(refundOrDue))}</p>
-              <p className="mt-1 text-sm font-semibold text-gray-500">{refundLabel}</p>
+              <p className={`text-4xl font-bold ${canReconcileRefund ? refundTone : "text-gray-500"}`}>
+                {canReconcileRefund ? formatMoney(Math.abs(refundOrDue)) : "Not calculated"}
+              </p>
+              <p className="mt-1 text-sm font-semibold text-gray-500">
+                {canReconcileRefund ? refundLabel : "Import TDS and income"}
+              </p>
             </div>
           </div>
 
@@ -665,21 +928,25 @@ export default function DashboardPage() {
               <div className="rounded-xl bg-slate-50 p-4">
                 <h3 className="font-bold text-gray-900">Why this tax?</h3>
                 <p className="mt-2 text-sm leading-6 text-gray-600">
-                  Old regime taxable income is {formatMoney(analysis.tax.oldRegimeTaxableIncome)} and estimated tax is {formatMoney(analysis.tax.oldRegimeEstimatedTax)}.
-                  New regime taxable income is {formatMoney(analysis.tax.newRegimeTaxableIncome)} and estimated tax is {formatMoney(analysis.tax.newRegimeEstimatedTax)}.
+                  {canEstimateTax
+                    ? `Old regime taxable income is ${formatMoney(analysis.tax.oldRegimeTaxableIncome)} and estimated tax is ${formatMoney(analysis.tax.oldRegimeEstimatedTax)}. New regime taxable income is ${formatMoney(analysis.tax.newRegimeTaxableIncome)} and estimated tax is ${formatMoney(analysis.tax.newRegimeEstimatedTax)}.`
+                    : "TaxBee needs confirmed income values before it can calculate old or new regime tax."}
                 </p>
               </div>
               <div className="rounded-xl bg-slate-50 p-4">
                 <h3 className="font-bold text-gray-900">Why this score?</h3>
                 <p className="mt-2 text-sm leading-6 text-gray-600">
-                  {intelligence.health.penalties[0]?.reason || "No major penalty found."}
-                  {intelligence.health.penalties[0]?.action ? ` ${intelligence.health.penalties[0].action}` : ""}
+                  {hasTaxData
+                    ? `${intelligence.health.penalties[0]?.reason || "No major penalty found."}${intelligence.health.penalties[0]?.action ? ` ${intelligence.health.penalties[0].action}` : ""}`
+                    : "Health scoring is locked until TaxBee has real imported or saved tax values."}
                 </p>
               </div>
               <div className="rounded-xl bg-slate-50 p-4">
                 <h3 className="font-bold text-gray-900">Why this refund/due?</h3>
                 <p className="mt-2 text-sm leading-6 text-gray-600">
-                  TaxBee compares imported TDS of {formatMoney(taxPaid)} against estimated payable tax of {formatMoney(bestCurrentTax)}.
+                  {canReconcileRefund
+                    ? `TaxBee compares imported TDS of ${formatMoney(taxPaid)} against estimated payable tax of ${formatMoney(bestCurrentTax)}.`
+                    : "Refund or due needs imported tax credits and a computed tax estimate."}
                 </p>
               </div>
             </div>
@@ -712,7 +979,9 @@ export default function DashboardPage() {
             <div>
               <h2 className="text-3xl font-bold text-gray-800">Tax Explanation Engine</h2>
               <p className="mt-1 text-sm leading-6 text-gray-500">
-                {intelligence.explanation.headline}
+                {canEstimateTax
+                  ? intelligence.explanation.headline
+                  : "TaxBee will explain calculations after income and source data are available."}
               </p>
             </div>
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
@@ -721,13 +990,17 @@ export default function DashboardPage() {
           </div>
 
           <div className="grid gap-4 border-t border-gray-200 pt-5 md:grid-cols-5">
-            {taxDrivers.map((driver) => (
+            {canEstimateTax ? taxDrivers.map((driver) => (
               <div key={driver.label} className="rounded-xl bg-slate-50 p-4">
                 <p className="text-xs font-bold uppercase tracking-wide text-gray-500">{driver.label}</p>
                 <p className="mt-2 text-2xl font-bold text-gray-900">{formatMoney(driver.amount)}</p>
                 <p className="mt-2 text-sm leading-6 text-gray-600">{driver.reason}</p>
               </div>
-            ))}
+            )) : (
+              <div className="rounded-xl bg-slate-50 p-4 md:col-span-5">
+                <p className="text-sm font-medium text-gray-600">No calculation drivers are shown until real income values exist.</p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -745,14 +1018,18 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {regimeComparison.map((row) => (
+                  {canEstimateTax ? regimeComparison.map((row) => (
                     <tr key={row.regime} className="border-t border-gray-200">
                       <td className="px-4 py-3 font-bold text-gray-900">{row.regime}</td>
                       <td className="px-4 py-3 text-gray-700">{formatMoney(row.taxableIncome)}</td>
                       <td className="px-4 py-3 text-gray-700">{formatMoney(row.tax)}</td>
                       <td className="px-4 py-3 text-gray-600">{row.decision}</td>
                     </tr>
-                  ))}
+                  )) : (
+                    <tr className="border-t border-gray-200">
+                      <td className="px-4 py-6 text-center text-gray-500" colSpan={4}>Add income data to compare regimes.</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -771,14 +1048,18 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {scenarioComparison.map((scenario) => (
+                  {canEstimateTax ? scenarioComparison.map((scenario) => (
                     <tr key={scenario.id} className="border-t border-gray-200">
                       <td className="px-4 py-3 font-bold text-gray-900">{scenario.label}</td>
                       <td className="px-4 py-3 text-gray-700">{formatMoney(scenario.tax)}</td>
                       <td className="px-4 py-3 font-bold text-green-700">{formatMoney(scenario.savingVsCurrent)}</td>
                       <td className="px-4 py-3 text-gray-600">{scenario.detail}</td>
                     </tr>
-                  ))}
+                  )) : (
+                    <tr className="border-t border-gray-200">
+                      <td className="px-4 py-6 text-center text-gray-500" colSpan={4}>Savings scenarios need real income and deduction values.</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -888,12 +1169,12 @@ export default function DashboardPage() {
             <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="text-3xl font-bold text-gray-800">Risk Breakdown</h2>
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
-                Risk {intelligence.anomalies.score}/100
+                {hasTaxData ? `Risk ${intelligence.anomalies.score}/100` : "Risk not calculated"}
               </span>
             </div>
 
             <div className="space-y-4 border-t border-gray-200 pt-5">
-              {riskBreakdown.length > 0 ? (
+              {hasTaxData && riskBreakdown.length > 0 ? (
                 riskBreakdown.map((risk, index) => (
                   <div key={`${risk.title}-${index}`} className="rounded-xl border border-orange-100 bg-orange-50 p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -912,7 +1193,9 @@ export default function DashboardPage() {
                 ))
               ) : (
                 <div className="rounded-xl bg-slate-50 p-4 text-sm font-medium text-gray-600">
-                  No major issue found in the fields TaxBee tracks.
+                  {hasTaxData
+                    ? "No major issue found in the fields TaxBee tracks."
+                    : "Import or enter tax data before TaxBee runs anomaly checks."}
                 </div>
               )}
             </div>
@@ -923,21 +1206,29 @@ export default function DashboardPage() {
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-3xl font-bold text-gray-800">Next-Year Planning</h2>
-              <p className="mt-1 text-sm text-gray-500">Estimate based on 10% income growth and common deduction scenarios.</p>
+              <p className="mt-1 text-sm text-gray-500">
+                {canEstimateTax
+                  ? "Estimate based on 10% income growth and common deduction scenarios."
+                  : "Planning estimates unlock after TaxBee has real income values."}
+              </p>
             </div>
             <span className="rounded-full bg-yellow-100 px-3 py-1 text-sm font-bold text-gray-900">
-              Best: {formatMoney(intelligence.nextYear.bestTax)}
+              Best: {canEstimateTax ? formatMoney(intelligence.nextYear.bestTax) : "Not calculated"}
             </span>
           </div>
 
           <div className="grid grid-cols-4 gap-4 border-t border-gray-200 pt-5">
-            {planningScenarios.map((scenario) => (
+            {planningScenarios.length > 0 ? planningScenarios.map((scenario) => (
               <div key={scenario.id} className="rounded-xl border border-gray-200 bg-slate-50 p-4">
                 <h3 className="font-bold text-gray-900">{scenario.label}</h3>
                 <p className="mt-3 text-2xl font-bold text-blue-700">{formatMoney(scenario.tax)}</p>
                 <p className="mt-2 text-sm leading-6 text-gray-500">{scenario.detail}</p>
               </div>
-            ))}
+            )) : (
+              <div className="rounded-xl border border-gray-200 bg-slate-50 p-4 text-sm font-medium text-gray-600">
+                No projected scenarios are shown without real current-year data.
+              </div>
+            )}
           </div>
         </div>
 

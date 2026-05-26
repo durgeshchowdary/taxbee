@@ -5,6 +5,8 @@ import type { ReactNode } from 'react';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import { STORAGE_KEYS } from '@/backend/utils/siteMap';
+import { statusForTaxLoadFailure } from '@/app/_utils/taxStatus';
+import { loadSession, logoutSession } from '@/app/_utils/authSession';
 
 type SalaryDraft = {
   salary17_1: string;
@@ -96,6 +98,9 @@ type ITRDraftPayload = {
     importedAt?: string;
     detectedSections?: string[];
   };
+  deductions?: Record<string, string | number | undefined>;
+  aisImport?: unknown;
+  extractionReview?: unknown[];
 };
 type SidebarIcon = 'dashboard' | 'file' | 'savings' | 'documents' | 'help';
 
@@ -110,6 +115,7 @@ export default function FileYourITRPage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [draftStatus, setDraftStatus] = useState('');
   const [showSalaryPopup, setShowSalaryPopup] = useState(false);
   const [showSalary17BreakdownPopup, setShowSalary17BreakdownPopup] = useState(false);
   const [showPerquisitesBreakdownPopup, setShowPerquisitesBreakdownPopup] = useState(false);
@@ -169,6 +175,7 @@ export default function FileYourITRPage() {
   const [professionalTaxDeduction, setProfessionalTaxDeduction] = useState('');
   const [entertainmentAllowanceDeduction, setEntertainmentAllowanceDeduction] = useState('');
   const [importedHeads, setImportedHeads] = useState<Omit<Partial<ITRDraftPayload>, 'salary' | 'userKey'>>({});
+  const [userKey, setUserKey] = useState('guest');
 
   const toNumber = (value: string) => Number(value || 0);
   const perqValue = (key: string) => perquisiteDetails[key] || '';
@@ -177,27 +184,6 @@ export default function FileYourITRPage() {
   };
   const positive = (value: number) => Math.max(0, value);
 
-  const getUserKey = (): string => {
-    if (typeof window === 'undefined') return 'guest';
-
-    try {
-      const storedUser = localStorage.getItem('user');
-      const verifiedPan = localStorage.getItem('verifiedPan');
-
-      if (verifiedPan) return verifiedPan;
-
-      if (storedUser) {
-        const parsed = JSON.parse(storedUser);
-        return parsed?.email || parsed?.name || 'guest';
-      }
-
-      return 'guest';
-    } catch {
-      return 'guest';
-    }
-  };
-
-  const userKey = getUserKey();
   const sidebarItems = [
     { icon: 'dashboard' as SidebarIcon, label: 'Dashboard', route: '/dashboard' },
     { icon: 'file' as SidebarIcon, label: 'File Tax', route: '/file-tax' },
@@ -717,27 +703,12 @@ export default function FileYourITRPage() {
   };
 
   useEffect(() => {
-    try {
-      const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
-      const parsed = savedUser ? (JSON.parse(savedUser) as { name?: string }) : null;
-      setUserName(parsed?.name || 'User');
-    } catch {
-      setUserName('User');
-    }
-  }, []);
-
-  useEffect(() => {
-    const syncAssistantUpdates = () => {
-      try {
-        const localDraft = localStorage.getItem('itrDraft');
-        if (localDraft) {
-          applyDraft(JSON.parse(localDraft) as Partial<ITRDraftPayload>);
-        }
-      } catch {}
+    const restoreUser = async () => {
+      const session = await loadSession();
+      setUserName(session?.user?.name || 'User');
+      setUserKey(session?.user?._id || session?.user?.email || 'guest');
     };
-
-    window.addEventListener('taxbee:storage-updated', syncAssistantUpdates);
-    return () => window.removeEventListener('taxbee:storage-updated', syncAssistantUpdates);
+    void restoreUser();
   }, []);
 
   useEffect(() => {
@@ -1044,51 +1015,59 @@ export default function FileYourITRPage() {
   useEffect(() => {
     const loadDraft = async () => {
       try {
-        const localDraft = localStorage.getItem('itrDraft');
-        if (localDraft) {
-          applyDraft(JSON.parse(localDraft) as Partial<ITRDraftPayload>);
-        }
-
-        const res = await fetch(`${API_BASE}/${encodeURIComponent(userKey)}`);
+        const res = await fetch('/api/tax-context');
         const text = await res.text();
-        console.log('Load draft raw response:', text);
 
-        let data: { draft: Partial<ITRDraftPayload> | null } | null = null;
+        let data:
+          | {
+              success?: boolean;
+              message?: string;
+              code?: string;
+              data?: { draft?: Partial<ITRDraftPayload> | null };
+              draft?: Partial<ITRDraftPayload> | null;
+            }
+          | null = null;
         try {
           data = JSON.parse(text);
         } catch {
           throw new Error(`Expected JSON but got: ${text.slice(0, 150)}`);
         }
 
-        if (res.ok && data?.draft) {
-          applyDraft(data.draft);
-          localStorage.setItem('itrDraft', JSON.stringify(data.draft));
+        const mongoDraft = data?.data?.draft || data?.draft || null;
+        if (!res.ok || data?.success === false) {
+          setDraftStatus(
+            statusForTaxLoadFailure({
+              res,
+              data,
+              emptyMessage: 'No saved draft yet',
+              fallbackMessage: 'Could not load your MongoDB ITR draft.',
+            })
+          );
+          return;
         }
+
+        if (mongoDraft) {
+          applyDraft(mongoDraft);
+        }
+        setDraftStatus(mongoDraft ? '' : 'No saved draft yet');
       } catch (error) {
         console.error('Failed to load draft:', error);
+        setDraftStatus(error instanceof Error ? error.message : 'Could not load your MongoDB ITR draft.');
       } finally {
         setIsLoading(false);
       }
     };
 
     loadDraft();
-  }, [userKey]);
-
-  useEffect(() => {
-    if (isLoading) return;
-    localStorage.setItem('itrDraft', JSON.stringify(draftPayload));
-  }, [isLoading, draftPayload]);
+  }, []);
 
   const saveDraftToBackend = async () => {
     setIsSaving(true);
     try {
-      const payload = draftPayload;
-      localStorage.setItem('itrDraft', JSON.stringify(payload));
-
       const res = await fetch(API_BASE, {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(draftPayload),
       });
 
       const text = await res.text();
@@ -1105,10 +1084,13 @@ export default function FileYourITRPage() {
         throw new Error(data?.message || 'Failed to save draft');
       }
 
+      setDraftStatus('Draft saved to MongoDB.');
       return true;
     } catch (error) {
       console.error('saveDraftToBackend error:', error);
-      alert('Failed to save draft to backend.');
+      const message = error instanceof Error ? error.message : 'Failed to save draft to backend.';
+      setDraftStatus(message);
+      alert(message);
       return false;
     } finally {
       setIsSaving(false);
@@ -1127,29 +1109,12 @@ export default function FileYourITRPage() {
     const ok = await saveDraftToBackend();
     if (!ok) return;
 
-    localStorage.setItem(
-      'itrSummary',
-      JSON.stringify({
-        userKey,
-        totalIncome,
-        incomeFromSalaries,
-        housePropertyIncome,
-        pgbpIncome,
-        capitalGainsIncome,
-        otherSourcesIncome,
-        aisImportMeta: importedHeads.aisImportMeta,
-      })
-    );
-
     router.push('/deductions');
   };
 
   const handleLogout = () => {
     localStorage.removeItem(STORAGE_KEYS.USER);
-    localStorage.removeItem(STORAGE_KEYS.AIS_IMPORT);
-    localStorage.removeItem(STORAGE_KEYS.VERIFIED_PAN);
-    localStorage.removeItem(STORAGE_KEYS.TAXPAYER_PROFILE);
-    localStorage.removeItem('token');
+    void logoutSession();
     router.push('/login');
   };
 
@@ -1285,6 +1250,9 @@ export default function FileYourITRPage() {
           <p className="mt-2 text-lg text-gray-500">
             Review imported AIS heads and declare income for accurate computation
           </p>
+          {draftStatus && (
+            <p className="mt-2 text-sm font-semibold text-amber-700">{draftStatus}</p>
+          )}
         </div>
 
         <div className="mb-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">

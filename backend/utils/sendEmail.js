@@ -1,18 +1,5 @@
-import nodemailer from "nodemailer";
+import { sendEmailMessage } from "../services/emailService.js";
 
 export const sendEmail = async (to, subject, text) => {
-  const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-
-  await transporter.sendMail({
-    from: `"TaxBee" <${process.env.EMAIL_USER}>`,
-    to,
-    subject,
-    text
-  });
+  return sendEmailMessage({ to, subject, text });
 };

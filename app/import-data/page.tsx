@@ -29,6 +29,29 @@ type AisImportSummary = {
   };
   rawPreview: unknown;
 };
+type PersistedImport = {
+  id: string;
+  documentType: string;
+  fileName: string;
+  importedAt: string;
+  reviewStatus?: string;
+  detectedSections: string[];
+  totals: AisImportSummary['totals'];
+  extractedFields: ExtractionReviewRecord[];
+  auditTrail?: AuditEntry[];
+  rawPreview?: unknown;
+  sourceMetadata?: {
+    jobId?: string;
+    processingStatus?: string;
+    failureCode?: string;
+    failureReason?: string;
+    extraction?: {
+      extractionMode?: string;
+      ocrCode?: string;
+      ocrEngine?: string;
+    };
+  };
+};
 
 type DraftImport = {
   salary: {
@@ -92,6 +115,18 @@ type AuditEntry = {
   actor: 'parser' | 'user';
 };
 
+const getAuthHeaders = () => {
+  return { 'Content-Type': 'application/json' };
+};
+
+const normalizeDocumentType = (fileName: string, detectedSections: string[]) => {
+  const normalized = `${fileName} ${detectedSections.join(' ')}`.toUpperCase();
+  if (normalized.includes('FORM 16') || normalized.includes('FORM_16')) return 'FORM_16';
+  if (normalized.includes('26AS')) return 'FORM_26AS';
+  if (normalized.includes('AIS')) return 'AIS';
+  return 'TAX_STATEMENT';
+};
+
 const fileSignature = async (file: File) => {
   const bytes = new Uint8Array(await file.slice(0, 8).arrayBuffer());
   return Array.from(bytes)
@@ -135,18 +170,8 @@ const toNumber = (value: unknown) => {
 
 const toAmountString = (value: number) => (value > 0 ? String(Math.round(value)) : '');
 
-const readAuditTrail = (): AuditEntry[] => {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEYS.AUDIT_TRAIL) || '[]') as AuditEntry[];
-  } catch {
-    localStorage.removeItem(STORAGE_KEYS.AUDIT_TRAIL);
-    return [];
-  }
-};
-
 const appendAuditEntries = (entries: AuditEntry[]) => {
-  const nextEntries = [...entries, ...readAuditTrail()].slice(0, 120);
-  localStorage.setItem(STORAGE_KEYS.AUDIT_TRAIL, JSON.stringify(nextEntries));
+  void entries;
 };
 
 const parseDelimitedLine = (line: string, delimiter: string) => {
@@ -472,14 +497,6 @@ const buildDraftFromAis = (data: unknown, summary: AisImportSummary): DraftImpor
   };
 };
 
-const mergeDefined = <T extends Record<string, string>>(current: T | undefined, incoming: T) => {
-  const merged = { ...(current || {}) } as T;
-  Object.entries(incoming).forEach(([key, value]) => {
-    if (value) merged[key as keyof T] = value as T[keyof T];
-  });
-  return merged;
-};
-
 const extractionFields: Array<{
   label: string;
   path: string;
@@ -513,20 +530,6 @@ const getPathValue = (record: Record<string, unknown>, path: string) =>
     return (value as Record<string, unknown>)[segment];
   }, record);
 
-const setPathValue = (record: Record<string, unknown>, path: string, value: string) => {
-  const segments = path.split('.');
-  let cursor = record;
-
-  segments.slice(0, -1).forEach((segment) => {
-    if (!cursor[segment] || typeof cursor[segment] !== 'object') {
-      cursor[segment] = {};
-    }
-    cursor = cursor[segment] as Record<string, unknown>;
-  });
-
-  cursor[segments[segments.length - 1]] = value;
-};
-
 const buildExtractionReviewRecords = (
   importedDraft: DraftImport,
   summary: AisImportSummary
@@ -554,56 +557,8 @@ const buildExtractionReviewRecords = (
   return records;
 };
 
-const saveExtractionReviewRecords = (records: ExtractionReviewRecord[]) => {
-  localStorage.setItem(STORAGE_KEYS.EXTRACTION_REVIEW, JSON.stringify(records));
-};
-
-const readExtractionReviewRecords = () => {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEYS.EXTRACTION_REVIEW) || '[]') as ExtractionReviewRecord[];
-  } catch {
-    localStorage.removeItem(STORAGE_KEYS.EXTRACTION_REVIEW);
-    return [];
-  }
-};
-
-const applyConfirmedExtractionsToTaxBeeHeads = (records: ExtractionReviewRecord[]) => {
-  const currentDraft = JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_DRAFT) || '{}') as Record<string, unknown>;
-  const nextDraft = { ...currentDraft };
-  const auditEntries: AuditEntry[] = [];
-
-  records
-    .filter((record) => record.status === 'confirmed' || record.status === 'overridden')
-    .forEach((record) => {
-      const oldValue = getPathValue(currentDraft, record.path);
-      setPathValue(nextDraft, record.path, record.value);
-      auditEntries.push({
-        id: `${Date.now()}-${record.id}-${record.status}`,
-        timestamp: Date.now(),
-        label:
-          record.status === 'overridden'
-            ? `User overrode ${record.label}`
-            : `User confirmed ${record.label}`,
-        key: STORAGE_KEYS.ITR_DRAFT,
-        path: record.path,
-        oldValue,
-        newValue: record.value,
-        source: record.source,
-        actor: 'user',
-      });
-    });
-
-  localStorage.setItem(STORAGE_KEYS.ITR_DRAFT, JSON.stringify(nextDraft));
-  appendAuditEntries(auditEntries);
-};
-
-const applyAisToTaxBeeHeads = (data: unknown, summary: AisImportSummary) => {
-  const importedDraft =
-    (summary as AisImportSummary & { form16Draft?: DraftImport }).form16Draft ||
-    buildDraftFromAis(data, summary);
-  const reviewRecords = buildExtractionReviewRecords(importedDraft, summary);
-  const currentDraft = JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_DRAFT) || '{}');
-  const parserAuditEntries = reviewRecords.map((record) => ({
+const buildParserAuditEntries = (records: ExtractionReviewRecord[]): AuditEntry[] =>
+  records.map((record) => ({
     id: `${Date.now()}-${record.id}-parser`,
     timestamp: Date.now(),
     label: `Parser extracted ${record.label}`,
@@ -615,32 +570,45 @@ const applyAisToTaxBeeHeads = (data: unknown, summary: AisImportSummary) => {
     actor: 'parser' as const,
   }));
 
-  const nextDraft = {
-    ...currentDraft,
-    salary: mergeDefined(currentDraft.salary, importedDraft.salary),
-    houseProperty: mergeDefined(currentDraft.houseProperty, importedDraft.houseProperty),
-    pgbp: mergeDefined(currentDraft.pgbp, importedDraft.pgbp),
-    capitalGains: mergeDefined(currentDraft.capitalGains, importedDraft.capitalGains),
-    otherSources: mergeDefined(currentDraft.otherSources, importedDraft.otherSources),
-    aisImportMeta: {
-      fileName: summary.fileName,
-      importedAt: summary.importedAt,
-      detectedSections: summary.detectedSections,
-    },
-  };
+const saveExtractionReviewRecords = (records: ExtractionReviewRecord[]) => {
+  void records;
+};
 
-  localStorage.setItem(STORAGE_KEYS.ITR_DRAFT, JSON.stringify(nextDraft));
-  saveExtractionReviewRecords(reviewRecords);
+const applyConfirmedExtractionsToTaxBeeHeads = (records: ExtractionReviewRecord[]) => {
+  const auditEntries: AuditEntry[] = [];
+
+  records
+    .filter((record) => record.status === 'confirmed' || record.status === 'overridden')
+    .forEach((record) => {
+      auditEntries.push({
+        id: `${Date.now()}-${record.id}-${record.status}`,
+        timestamp: Date.now(),
+        label:
+          record.status === 'overridden'
+            ? `User overrode ${record.label}`
+            : `User confirmed ${record.label}`,
+        key: STORAGE_KEYS.ITR_DRAFT,
+        path: record.path,
+        oldValue: record.originalValue,
+        newValue: record.value,
+        source: record.source,
+        actor: 'user',
+      });
+    });
+
+  appendAuditEntries(auditEntries);
+  return auditEntries;
+};
+
+const applyAisToTaxBeeHeads = (data: unknown, summary: AisImportSummary) => {
+  const importedDraft =
+    (summary as AisImportSummary & { form16Draft?: DraftImport }).form16Draft ||
+    buildDraftFromAis(data, summary);
+  const reviewRecords = buildExtractionReviewRecords(importedDraft, summary);
+  const parserAuditEntries = buildParserAuditEntries(reviewRecords);
+
   appendAuditEntries(parserAuditEntries);
-  localStorage.setItem(
-    STORAGE_KEYS.ITR_SUMMARY,
-    JSON.stringify({
-      ...(JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_SUMMARY) || '{}')),
-      aisImportedAt: summary.importedAt,
-      aisDetectedSections: summary.detectedSections,
-      aisTotals: summary.totals,
-    })
-  );
+  return { importedDraft, reviewRecords, parserAuditEntries };
 };
 
 const summarizeAisJson = (data: unknown, fileName: string): AisImportSummary => {
@@ -728,26 +696,123 @@ const summarizeAisJson = (data: unknown, fileName: string): AisImportSummary => 
   };
 };
 
-const readStoredAisImport = () => {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEYS.AIS_IMPORT);
-    if (!saved) return null;
-    return JSON.parse(saved) as AisImportSummary;
-  } catch {
-    localStorage.removeItem(STORAGE_KEYS.AIS_IMPORT);
-    return null;
+const hasLocalOnlyImportData = () => {
+  if (typeof window === 'undefined') return false;
+  return Boolean(
+    localStorage.getItem(STORAGE_KEYS.AIS_IMPORT) ||
+      localStorage.getItem(STORAGE_KEYS.EXTRACTION_REVIEW) ||
+      localStorage.getItem(STORAGE_KEYS.ITR_DRAFT)
+  );
+};
+
+const persistImportToBackend = async (
+  summary: AisImportSummary,
+  records: ExtractionReviewRecord[]
+) => {
+  const headers = getAuthHeaders();
+  if (!headers) {
+    throw new Error('Sign in before saving imports to your account.');
+  }
+
+  const auditTrail = buildParserAuditEntries(records);
+  const res = await fetch('/api/imports', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      documentType: normalizeDocumentType(summary.fileName, summary.detectedSections),
+      fileName: summary.fileName,
+      importedAt: summary.importedAt,
+      detectedSections: summary.detectedSections,
+      totals: summary.totals,
+      rawPreview: null,
+      extractedFields: records,
+      auditTrail,
+    }),
+  });
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.message || 'Import could not be saved to your account.');
+  }
+
+  return data.data?.import as PersistedImport | undefined;
+};
+
+const patchImportReview = async (
+  importId: string,
+  records: ExtractionReviewRecord[],
+  auditTrail: AuditEntry[]
+) => {
+  const headers = getAuthHeaders();
+
+  const res = await fetch(`/api/imports/${encodeURIComponent(importId)}/review`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ extractedFields: records, auditTrail }),
+  });
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.message || 'Review changes could not be saved.');
+  }
+
+  return data.data?.import as PersistedImport | undefined;
+};
+
+const deletePersistedImport = async (importId: string) => {
+  const headers = getAuthHeaders();
+
+  const res = await fetch(`/api/imports/${encodeURIComponent(importId)}`, {
+    method: 'DELETE',
+    headers,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.message || 'Persisted import could not be removed.');
   }
 };
 
-const readStoredDraft = () => {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_DRAFT) || '{}') as Partial<DraftImport> & {
-      aisImportMeta?: unknown;
-    };
-  } catch {
-    return {};
+const fileToBase64 = async (file: File) => {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
+  return btoa(binary);
 };
+
+const uploadDocumentToBackend = async (file: File, text: string, fileBase64 = '') => {
+  const headers = getAuthHeaders();
+  if (!headers) throw new Error('Sign in before uploading documents to your account.');
+
+  const res = await fetch('/api/imports/upload', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      fileName: file.name,
+      mimeType: file.type || 'text/plain',
+      text,
+      fileBase64,
+      sizeBytes: file.size,
+    }),
+  });
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.message || 'Document could not be processed.');
+  }
+
+  return data.data?.import as PersistedImport | undefined;
+};
+
+const isBinaryImportFile = (file: File) =>
+  file.type === 'application/pdf' ||
+  file.type.startsWith('image/') ||
+  /\.(pdf|png|jpe?g|webp|tiff?)$/i.test(file.name);
+
+const readStoredDraft = () => ({} as Partial<DraftImport>);
 
 const hasAnyValue = (record: Record<string, string> | undefined) =>
   Boolean(record && Object.values(record).some((value) => Number(value || 0) > 0));
@@ -816,27 +881,28 @@ const buildAisIntelligence = (summary: AisImportSummary | null, draft = readStor
 };
 
 const clearAisImportFromStorage = () => {
-  localStorage.removeItem(STORAGE_KEYS.AIS_IMPORT);
+  // Legacy browser-only tax data is intentionally not treated as canonical.
+};
 
-  try {
-    const currentDraft = JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_DRAFT) || '{}');
-    const draftWithoutAisMeta = { ...currentDraft };
-    delete draftWithoutAisMeta.aisImportMeta;
-    localStorage.setItem(STORAGE_KEYS.ITR_DRAFT, JSON.stringify(draftWithoutAisMeta));
-  } catch {
-    // Keep the existing draft untouched if it is not valid JSON.
-  }
+const setPathValue = (record: Record<string, unknown>, path: string, value: string) => {
+  const segments = path.split('.');
+  let cursor = record;
+  segments.slice(0, -1).forEach((segment) => {
+    if (!cursor[segment] || typeof cursor[segment] !== 'object' || Array.isArray(cursor[segment])) {
+      cursor[segment] = {};
+    }
+    cursor = cursor[segment] as Record<string, unknown>;
+  });
+  cursor[segments[segments.length - 1]] = value;
+};
 
-  try {
-    const currentSummary = JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_SUMMARY) || '{}');
-    const summaryWithoutAis = { ...currentSummary };
-    delete summaryWithoutAis.aisImportedAt;
-    delete summaryWithoutAis.aisDetectedSections;
-    delete summaryWithoutAis.aisTotals;
-    localStorage.setItem(STORAGE_KEYS.ITR_SUMMARY, JSON.stringify(summaryWithoutAis));
-  } catch {
-    // Keep the existing summary untouched if it is not valid JSON.
-  }
+const draftFromReviewRecords = (records: ExtractionReviewRecord[]) => {
+  const draft = {} as Partial<DraftImport>;
+  records.forEach((record) => {
+    if (record.path.startsWith('deductions.') || record.path.startsWith('taxpayerProfile.') || record.path.startsWith('taxCredits.')) return;
+    setPathValue(draft as Record<string, unknown>, record.path, record.value);
+  });
+  return draft;
 };
 
 export default function ImportDataPage() {
@@ -852,17 +918,108 @@ export default function ImportDataPage() {
   const [portalOpened, setPortalOpened] = useState(false);
   const [copyStatus, setCopyStatus] = useState('');
   const [reviewRecords, setReviewRecords] = useState<ExtractionReviewRecord[]>([]);
+  const [persistedImportId, setPersistedImportId] = useState<string | null>(null);
+  const [importSaveStatus, setImportSaveStatus] = useState('');
+  const [importSaveType, setImportSaveType] = useState<'info' | 'success' | 'warning'>('info');
 
   useEffect(() => {
-    const savedImport = readStoredAisImport();
-    setReviewRecords(readExtractionReviewRecords());
-    if (!savedImport) return;
+    const loadPersistedImports = async () => {
+      const hasLegacyLocalData = hasLocalOnlyImportData();
 
-    setUploadedAisFileName(savedImport.fileName || 'AIS JSON file');
-    setAisStatus('AIS JSON is already imported and mapped into TaxBee filing heads.');
-    setAisStatusType('success');
-    setAisIntelligence(buildAisIntelligence(savedImport));
+      const headers = getAuthHeaders();
+      if (!headers) {
+        setImportSaveStatus(hasLegacyLocalData ? 'Local-only unsaved tax data was found in this browser. Sign in and re-upload or save explicitly; TaxBee will not use it as account data.' : '');
+        setImportSaveType('warning');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/imports', { headers });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Could not load account imports.');
+
+        const latest = (data.data?.imports?.[0] || data.imports?.[0]) as PersistedImport | undefined;
+        if (!latest) {
+          setImportSaveStatus(hasLegacyLocalData ? 'Local-only unsaved tax data was found. It has not been migrated to MongoDB automatically.' : '');
+          setImportSaveType('info');
+          return;
+        }
+
+        const summary: AisImportSummary = {
+          fileName: latest.fileName,
+          importedAt: latest.importedAt,
+          detectedSections: latest.detectedSections || [],
+          totals: latest.totals || { tds: 0, interest: 0, dividend: 0, salary: 0, other: 0 },
+          rawPreview: null,
+        };
+        const records = latest.extractedFields || [];
+
+        setPersistedImportId(latest.id);
+        setUploadedAisFileName(latest.fileName);
+        if (latest.reviewStatus === 'failed' || latest.sourceMetadata?.processingStatus === 'failed') {
+          setAisStatus(
+            latest.sourceMetadata?.failureCode === 'OCR_NOT_CONFIGURED'
+              ? 'OCR is not configured on the backend. Upload a text-based PDF/CSV/TXT export or ask an admin to enable OCR_PROVIDER.'
+              : latest.sourceMetadata?.failureReason || 'Background extraction failed. Re-upload the document or enter values manually.'
+          );
+          setAisStatusType('warning');
+        } else if (latest.sourceMetadata?.processingStatus === 'processing') {
+          setAisStatus('OCR/document extraction is processing. Scanned PDF pages may take a little longer.');
+          setAisStatusType('info');
+        } else if (latest.reviewStatus === 'queued' || latest.sourceMetadata?.processingStatus === 'queued') {
+          setAisStatus('OCR/document extraction is queued. Refresh after the worker completes.');
+          setAisStatusType('info');
+        } else if (latest.sourceMetadata?.extraction?.extractionMode === 'ocr_pdf_pages') {
+          setAisStatus('Scanned PDF OCR completed. Review extracted fields before treating them as final.');
+          setAisStatusType('success');
+        } else {
+          setAisStatus('Latest imported document loaded from your TaxBee account.');
+          setAisStatusType('success');
+        }
+        setAisIntelligence(buildAisIntelligence(summary));
+        setReviewRecords(records);
+        setImportSaveStatus(
+          latest.reviewStatus === 'failed' || latest.sourceMetadata?.processingStatus === 'failed'
+            ? 'Import is saved with failed extraction status. No raw OCR text is exposed.'
+            : latest.sourceMetadata?.processingStatus === 'processing' || latest.sourceMetadata?.processingStatus === 'queued'
+            ? 'Background extraction has not completed yet.'
+            : 'Import data is saved to MongoDB.'
+        );
+        setImportSaveType(
+          latest.reviewStatus === 'failed' || latest.sourceMetadata?.processingStatus === 'failed'
+            ? 'warning'
+            : latest.sourceMetadata?.processingStatus === 'processing' || latest.sourceMetadata?.processingStatus === 'queued'
+            ? 'info'
+            : 'success'
+        );
+      } catch (error) {
+        setImportSaveStatus(error instanceof Error ? error.message : 'Could not load account imports.');
+        setImportSaveType('warning');
+      }
+    };
+
+    void loadPersistedImports();
   }, []);
+
+  const saveCurrentImportToAccount = async (
+    summary: AisImportSummary,
+    records: ExtractionReviewRecord[]
+  ) => {
+    setReviewRecords(records);
+    setImportSaveStatus('Saving import to your account...');
+    setImportSaveType('info');
+
+    try {
+      const persisted = await persistImportToBackend(summary, records);
+      if (persisted?.id) setPersistedImportId(persisted.id);
+      setImportSaveStatus('Import saved to MongoDB. Dashboard and Bee Assistant can use it without an ITR draft save.');
+      setImportSaveType('success');
+    } catch (error) {
+      setPersistedImportId(null);
+      setImportSaveStatus(error instanceof Error ? error.message : 'Import was not saved to your account.');
+      setImportSaveType('warning');
+    }
+  };
 
   const handleAisUpload = async (file: File | null) => {
     setAisStatus('');
@@ -871,72 +1028,89 @@ export default function ImportDataPage() {
 
     try {
       const signature = await fileSignature(file);
-      const text = await file.text();
+      const binaryImportFile = isBinaryImportFile(file);
+      const text = binaryImportFile ? '' : await file.text();
       const trimmedText = text.trim();
+      setImportSaveStatus(binaryImportFile ? 'Extracting text from PDF/image with TaxBee document pipeline...' : 'Processing document with TaxBee parser...');
+      setImportSaveType('info');
 
-      if (trimmedText.startsWith('PK')) {
+      if (!binaryImportFile && trimmedText.startsWith('PK')) {
         throw new Error('Spreadsheet or ZIP selected');
       }
 
-      const form16Summary = parseReadableForm16Export(text, file.name);
-      if (form16Summary) {
-        localStorage.setItem(STORAGE_KEYS.AIS_IMPORT, JSON.stringify(form16Summary));
-        applyAisToTaxBeeHeads(form16Summary.rawPreview, form16Summary);
-        window.dispatchEvent(
-          new CustomEvent('taxbee:storage-updated', {
-            detail: { key: STORAGE_KEYS.ITR_DRAFT, path: 'salary' },
-          })
-        );
-        setUploadedAisFileName(file.name);
-        setAisStatus('Form 16 data extracted into review. Confirm or correct the values before final filing.');
-        setAisStatusType('success');
-        setAisIntelligence(buildAisIntelligence(form16Summary));
-        setReviewRecords(readExtractionReviewRecords());
-        return;
-      }
-
-      if (looksLikeEncryptedAisUtilityJson(trimmedText)) {
+      if (!binaryImportFile && looksLikeEncryptedAisUtilityJson(trimmedText)) {
         if (!aisPassword) {
           throw new Error('Encrypted AIS password required');
         }
 
         const parsed = await tryDecryptEncryptedAisJson(trimmedText, aisPassword, pan);
-        const summary = summarizeAisJson(parsed, file.name);
-
-        localStorage.setItem(STORAGE_KEYS.AIS_IMPORT, JSON.stringify(summary));
-        applyAisToTaxBeeHeads(parsed, summary);
-        window.dispatchEvent(
-          new CustomEvent('taxbee:storage-updated', {
-            detail: { key: STORAGE_KEYS.ITR_DRAFT, path: 'salary' },
-          })
-        );
-        setUploadedAisFileName(file.name);
-        setAisStatus('Encrypted AIS JSON decrypted and mapped into TaxBee filing heads.');
+        const decryptedFile = new File([JSON.stringify(parsed)], file.name, { type: 'application/json' });
+        const persisted = await uploadDocumentToBackend(decryptedFile, JSON.stringify(parsed));
+        if (!persisted) throw new Error('Document was processed but no import was returned.');
+        const summary: AisImportSummary = {
+          fileName: persisted.fileName,
+          importedAt: persisted.importedAt,
+          detectedSections: persisted.detectedSections || [],
+          totals: persisted.totals || { tds: 0, interest: 0, dividend: 0, salary: 0, other: 0 },
+          rawPreview: null,
+        };
+        const records = persisted.extractedFields || [];
+        setPersistedImportId(persisted.id);
+        setReviewRecords(records);
+        setUploadedAisFileName(persisted.fileName);
+        setAisStatus('Encrypted AIS JSON decrypted, processed, and saved to MongoDB for review.');
         setAisStatusType('success');
-        setAisIntelligence(buildAisIntelligence(summary));
-        setReviewRecords(readExtractionReviewRecords());
+        setAisIntelligence(buildAisIntelligence(summary, draftFromReviewRecords(records)));
+        setImportSaveStatus('Document understanding complete. Review extracted fields before treating them as final.');
+        setImportSaveType('success');
+        window.dispatchEvent(new CustomEvent('taxbee:storage-updated', { detail: { key: STORAGE_KEYS.ITR_DRAFT, path: 'extractionReview' } }));
         return;
       }
 
-      const parsed = parseReadableAisExport(text, file.name);
-      if (!parsed) {
+      if (!binaryImportFile && !trimmedText) {
         throw new Error(`Not readable AIS text. Signature: ${signature}`);
       }
 
-      const summary = summarizeAisJson(parsed, file.name);
-
-      localStorage.setItem(STORAGE_KEYS.AIS_IMPORT, JSON.stringify(summary));
-      applyAisToTaxBeeHeads(parsed, summary);
+      const persisted = await uploadDocumentToBackend(file, text, binaryImportFile ? await fileToBase64(file) : '');
+      if (!persisted) throw new Error('Document was processed but no import was returned.');
+      const queuedForProcessing = persisted.reviewStatus === 'queued' || persisted.sourceMetadata?.processingStatus === 'queued';
+      const ocrQueued = queuedForProcessing && binaryImportFile && /^image\//i.test(file.type);
+      const scannedPdfQueued = queuedForProcessing && binaryImportFile && file.type === 'application/pdf';
+      const summary: AisImportSummary = {
+        fileName: persisted.fileName,
+        importedAt: persisted.importedAt,
+        detectedSections: persisted.detectedSections || [],
+        totals: persisted.totals || { tds: 0, interest: 0, dividend: 0, salary: 0, other: 0 },
+        rawPreview: null,
+      };
+      const records = persisted.extractedFields || [];
+      setPersistedImportId(persisted.id);
+      setReviewRecords(records);
       window.dispatchEvent(
         new CustomEvent('taxbee:storage-updated', {
-          detail: { key: STORAGE_KEYS.ITR_DRAFT, path: 'salary' },
+          detail: { key: STORAGE_KEYS.ITR_DRAFT, path: 'extractionReview' },
         })
       );
-      setUploadedAisFileName(file.name);
-      setAisStatus('AIS data imported and mapped into TaxBee filing heads.');
-      setAisStatusType('success');
-      setAisIntelligence(buildAisIntelligence(summary));
-      setReviewRecords(readExtractionReviewRecords());
+      setUploadedAisFileName(persisted.fileName);
+      setAisStatus(
+        ocrQueued
+          ? 'Image uploaded and queued for OCR. Refresh this import after the worker completes.'
+          : scannedPdfQueued
+          ? 'PDF uploaded and queued for background extraction. If it has no selectable text, TaxBee will render pages for OCR in the worker.'
+          : queuedForProcessing
+          ? 'Document uploaded and queued for background extraction. Refresh this import after the worker completes.'
+          : 'Document processed into structured tax fields and saved to MongoDB for review.'
+      );
+      setAisStatusType(queuedForProcessing ? 'info' : 'success');
+      setAisIntelligence(buildAisIntelligence(summary, draftFromReviewRecords(records)));
+      setImportSaveStatus(
+        ocrQueued
+          ? 'OCR queued. Extracted fields will stay pending until you review and confirm them.'
+          : queuedForProcessing
+          ? 'Background extraction queued. TaxBee will store the extracted fields when the worker finishes.'
+          : 'Document understanding complete. Review extracted fields before treating them as final.'
+      );
+      setImportSaveType(queuedForProcessing ? 'info' : 'success');
     } catch (error) {
       setUploadedAisFileName('');
       setAisIntelligence(null);
@@ -959,19 +1133,31 @@ export default function ImportDataPage() {
         setAisStatus('The AIS password did not match this encrypted JSON file. Enter your full PAN above, then use DOB in DDMMYYYY format or the full PAN+DOB password.');
         setAisStatusType('warning');
       } else {
-        setAisStatus(`Could not read "${file.name}" as AIS data. Upload a readable AIS JSON, CSV, TSV, or TXT export. Do not upload PDF, HTML, or the locked encrypted source file.`);
+        setAisStatus(`Could not read "${file.name}" as tax data. Upload a readable PDF, image, AIS JSON, CSV, TSV, or TXT export. If this is scanned, the backend OCR provider may not be configured.`);
         setAisStatusType('warning');
       }
     }
   };
 
-  const handleRemoveAisUpload = () => {
+  const handleRemoveAisUpload = async () => {
+    if (persistedImportId) {
+      try {
+        await deletePersistedImport(persistedImportId);
+        setImportSaveStatus('Persisted import removed from MongoDB.');
+        setImportSaveType('success');
+      } catch (error) {
+        setImportSaveStatus(error instanceof Error ? error.message : 'Persisted import could not be removed.');
+        setImportSaveType('warning');
+      }
+    }
+
     clearAisImportFromStorage();
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
     setUploadedAisFileName('');
     setAisIntelligence(null);
+    setPersistedImportId(null);
     saveExtractionReviewRecords([]);
     setReviewRecords([]);
     setAisStatus('Uploaded AIS data removed from TaxBee. Manually entered filing values were kept.');
@@ -983,7 +1169,7 @@ export default function ImportDataPage() {
     );
   };
 
-  const savePanContext = () => {
+  const savePanContext = async () => {
     if (!pan) {
       alert('Please enter PAN number');
       return null;
@@ -996,17 +1182,33 @@ export default function ImportDataPage() {
       return null;
     }
 
-    localStorage.setItem(STORAGE_KEYS.VERIFIED_PAN, normalizedPan);
-    localStorage.setItem(
-      STORAGE_KEYS.TAXPAYER_PROFILE,
-      JSON.stringify({
+    const taxpayerProfile = {
         panMasked: maskPan(normalizedPan),
         panLastFour: normalizedPan.slice(-4),
         importStatus: 'verified',
         importSource: 'PAN login',
         importedAt: new Date().toISOString(),
-      })
-    );
+      };
+    const headers = getAuthHeaders();
+    if (headers) {
+      try {
+        const res = await fetch('/api/itr-draft', {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ taxpayerProfile }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'PAN context could not be saved.');
+        setImportSaveStatus('PAN context saved to MongoDB.');
+        setImportSaveType('success');
+      } catch (error) {
+        setImportSaveStatus(error instanceof Error ? error.message : 'PAN context was not saved to your account.');
+        setImportSaveType('warning');
+      }
+    } else {
+      setImportSaveStatus('PAN verified for this session only. Sign in to save taxpayer profile to MongoDB.');
+      setImportSaveType('warning');
+    }
     window.dispatchEvent(
       new CustomEvent('taxbee:storage-updated', {
         detail: { key: STORAGE_KEYS.TAXPAYER_PROFILE, path: 'importStatus' },
@@ -1016,8 +1218,8 @@ export default function ImportDataPage() {
     return normalizedPan;
   };
 
-  const handleOpenPortal = () => {
-    const normalizedPan = savePanContext();
+  const handleOpenPortal = async () => {
+    const normalizedPan = await savePanContext();
     if (!normalizedPan) return;
 
     window.open(INCOME_TAX_PORTAL_URL, '_blank', 'noopener,noreferrer');
@@ -1026,8 +1228,8 @@ export default function ImportDataPage() {
     setAisStatusType('info');
   };
 
-  const handleOpenAisPortal = () => {
-    const normalizedPan = savePanContext();
+  const handleOpenAisPortal = async () => {
+    const normalizedPan = await savePanContext();
     if (!normalizedPan) return;
 
     window.open(AIS_PORTAL_URL, '_blank', 'noopener,noreferrer');
@@ -1037,7 +1239,7 @@ export default function ImportDataPage() {
   };
 
   const handleCopyPan = async () => {
-    const normalizedPan = savePanContext();
+    const normalizedPan = await savePanContext();
     if (!normalizedPan) return;
 
     try {
@@ -1050,8 +1252,7 @@ export default function ImportDataPage() {
   };
 
   const handleFinishImport = () => {
-    const savedImport = readStoredAisImport();
-    if (!savedImport) {
+    if (!uploadedAisFileName && !persistedImportId) {
       alert('Please upload AIS data before continuing.');
       return;
     }
@@ -1074,7 +1275,7 @@ export default function ImportDataPage() {
     );
   };
 
-  const confirmReviewRecord = (id: string) => {
+  const confirmReviewRecord = async (id: string) => {
     const nextRecords: ExtractionReviewRecord[] = reviewRecords.map((record) =>
       record.id === id
         ? {
@@ -1086,7 +1287,22 @@ export default function ImportDataPage() {
     );
     setReviewRecords(nextRecords);
     saveExtractionReviewRecords(nextRecords);
-    applyConfirmedExtractionsToTaxBeeHeads(nextRecords);
+    const auditEntries = applyConfirmedExtractionsToTaxBeeHeads(nextRecords);
+    if (persistedImportId) {
+      setImportSaveStatus('Saving review status...');
+      setImportSaveType('info');
+      try {
+        await patchImportReview(persistedImportId, nextRecords, auditEntries);
+        setImportSaveStatus('Review status saved to MongoDB.');
+        setImportSaveType('success');
+      } catch (error) {
+        setImportSaveStatus(error instanceof Error ? error.message : 'Review status was not saved.');
+        setImportSaveType('warning');
+      }
+    } else {
+      setImportSaveStatus('Review is visible on this screen only because the import is not saved to MongoDB. Upload again while signed in to persist it.');
+      setImportSaveType('warning');
+    }
     window.dispatchEvent(
       new CustomEvent('taxbee:storage-updated', {
         detail: { key: STORAGE_KEYS.ITR_DRAFT, path: 'extractionReview' },
@@ -1094,7 +1310,7 @@ export default function ImportDataPage() {
     );
   };
 
-  const confirmAllReviewRecords = () => {
+  const confirmAllReviewRecords = async () => {
     const nextRecords: ExtractionReviewRecord[] = reviewRecords.map((record) => ({
       ...record,
       status: record.value === record.originalValue ? 'confirmed' as const : 'overridden' as const,
@@ -1102,7 +1318,22 @@ export default function ImportDataPage() {
     }));
     setReviewRecords(nextRecords);
     saveExtractionReviewRecords(nextRecords);
-    applyConfirmedExtractionsToTaxBeeHeads(nextRecords);
+    const auditEntries = applyConfirmedExtractionsToTaxBeeHeads(nextRecords);
+    if (persistedImportId) {
+      setImportSaveStatus('Saving review status...');
+      setImportSaveType('info');
+      try {
+        await patchImportReview(persistedImportId, nextRecords, auditEntries);
+        setImportSaveStatus('All review statuses saved to MongoDB.');
+        setImportSaveType('success');
+      } catch (error) {
+        setImportSaveStatus(error instanceof Error ? error.message : 'Review status was not saved.');
+        setImportSaveType('warning');
+      }
+    } else {
+      setImportSaveStatus('Review is visible on this screen only because the import is not saved to MongoDB. Upload again while signed in to persist it.');
+      setImportSaveType('warning');
+    }
     window.dispatchEvent(
       new CustomEvent('taxbee:storage-updated', {
         detail: { key: STORAGE_KEYS.ITR_DRAFT, path: 'extractionReview' },
@@ -1228,12 +1459,12 @@ export default function ImportDataPage() {
             </div>
             <label className="mb-2 block font-medium text-gray-800">Tax Document Export</label>
             <p className="mb-3 text-sm text-gray-600">
-              Upload readable AIS JSON, Form 26AS CSV/TXT, or Form 16 text. If you only have the locked AIS Utility file, open it in AIS Utility first and export/save readable data.
+              Upload readable AIS JSON, Form 26AS CSV/TXT, Form 16 PDF/text, salary slips, receipts, or image documents. Scanned files need backend OCR support.
             </p>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".json,.csv,.tsv,.txt,.pdf,application/json,text/csv,text/plain,application/pdf"
+              accept=".json,.csv,.tsv,.txt,.pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,application/json,text/csv,text/plain,application/pdf,image/png,image/jpeg,image/webp,image/tiff"
               onChange={(e) => void handleAisUpload(e.target.files?.[0] || null)}
               className="hidden"
             />
@@ -1266,6 +1497,19 @@ export default function ImportDataPage() {
                   </button>
                 </div>
               </div>
+            )}
+            {importSaveStatus && (
+              <p
+                className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+                  importSaveType === 'success'
+                    ? 'bg-green-50 text-green-700'
+                    : importSaveType === 'warning'
+                      ? 'bg-amber-50 text-amber-800'
+                      : 'bg-blue-50 text-blue-700'
+                }`}
+              >
+                {importSaveStatus}
+              </p>
             )}
             {aisIntelligence && (
               <div className="mt-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-gray-800">

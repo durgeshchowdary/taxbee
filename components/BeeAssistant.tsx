@@ -11,12 +11,14 @@ export type Message = {
   sender: "user" | "assistant";
   text: string;
   guideOfferId?: string;
+  explainability?: Explainability;
 };
 
 type AssistantResponse = {
   reply?: string;
   memorySummary?: string;
   actions?: AssistantAction[];
+  explainability?: Explainability;
   degraded?: boolean;
   retryable?: boolean;
   requestId?: string;
@@ -61,6 +63,12 @@ type AssistantAction =
       value: string;
       label?: string;
       route?: string;
+    }
+  | {
+      type: "create_reviewer_comment";
+      fieldKey?: string;
+      comment: string;
+      label?: string;
     };
 
 type ChecklistItem = {
@@ -75,14 +83,33 @@ type SmartSuggestion = {
   value: string;
 };
 
+type Explainability = {
+  confidence?: number;
+  basedOn?: string[];
+  sourceFields?: string[];
+  sourceDocuments?: string[];
+  auditRefs?: string[];
+  calculationBasis?: string[];
+  warnings?: string[];
+  missingData?: string[];
+  dataStates?: {
+    confirmed?: number;
+    extracted?: number;
+    overridden?: number;
+  };
+  mode?: string;
+};
+
 type AuditEntry = {
   id: string;
-  timestamp: number;
-  label: string;
+  timestamp: number | string;
+  label?: string;
+  eventType?: string;
   key: string;
-  path: string;
+  path?: string;
+  fieldKey?: string;
   oldValue: unknown;
-  newValue: string;
+  newValue: unknown;
 };
 type ExtractionReviewRecord = {
   id: string;
@@ -117,13 +144,6 @@ const INITIAL_MESSAGES: Message[] = [
   },
 ];
 
-const maskPan = (pan: string | null) => {
-  if (!pan) return null;
-  const normalized = pan.toUpperCase();
-  if (normalized.length < 5) return normalized;
-  return `${normalized.slice(0, 2)}*****${normalized.slice(-3)}`;
-};
-
 const safeUserContext = (rawUser: string | null) => {
   if (!rawUser) return null;
 
@@ -152,15 +172,7 @@ const hasAnyAmount = (record: unknown) =>
   );
 
 const readAuditTrail = (): AuditEntry[] => {
-  if (typeof window === "undefined") return [];
-
-  try {
-    const saved = localStorage.getItem(STORAGE_KEYS.AUDIT_TRAIL);
-    return saved ? (JSON.parse(saved) as AuditEntry[]) : [];
-  } catch {
-    localStorage.removeItem(STORAGE_KEYS.AUDIT_TRAIL);
-    return [];
-  }
+  return [];
 };
 
 const findGuideForMessage = (message: string) => {
@@ -249,6 +261,62 @@ const setNestedValue = (
   });
 
   target[pathParts[pathParts.length - 1]] = value;
+};
+
+const saveAssistantFieldToMongo = async (action: Extract<AssistantAction, { type: "set_local_storage" }>) => {
+  const token = localStorage.getItem("token");
+  if (!token) throw new Error("Sign in before Bee Assistant can update tax data.");
+
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+
+  if (action.key === STORAGE_KEYS.DEDUCTIONS) {
+    const getRes = await fetch("/api/deductions", { headers });
+    const getData = await getRes.json().catch(() => ({}));
+    if (!getRes.ok) throw new Error(getData.message || "Could not load deductions.");
+
+    const current =
+      getData.data?.deductions && typeof getData.data.deductions === "object"
+        ? { ...getData.data.deductions }
+        : {};
+    const oldValue = getNestedValue(current, action.path);
+    setNestedValue(current, action.path, action.value);
+
+    const putRes = await fetch("/api/deductions", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ deductions: current, sourceType: "assistant" }),
+    });
+    const putData = await putRes.json().catch(() => ({}));
+    if (!putRes.ok) throw new Error(putData.message || "Could not save deductions.");
+    return { oldValue };
+  }
+
+  if (action.key === STORAGE_KEYS.ITR_DRAFT) {
+    const getRes = await fetch("/api/itr-draft", { headers });
+    const getData = await getRes.json().catch(() => ({}));
+    if (!getRes.ok) throw new Error(getData.message || "Could not load ITR draft.");
+
+    const current =
+      getData.data?.draft && typeof getData.data.draft === "object"
+        ? { ...getData.data.draft }
+        : {};
+    const oldValue = getNestedValue(current, action.path);
+    setNestedValue(current, action.path, action.value);
+
+    const putRes = await fetch("/api/itr-draft", {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ ...current, sourceType: "assistant" }),
+    });
+    const putData = await putRes.json().catch(() => ({}));
+    if (!putRes.ok) throw new Error(putData.message || "Could not save ITR draft.");
+    return { oldValue };
+  }
+
+  throw new Error("Bee Assistant can only update MongoDB-backed tax fields.");
 };
 
 export default function BeeAssistant({
@@ -350,29 +418,54 @@ export default function BeeAssistant({
   useEffect(() => {
     if (!isOpen) return;
 
-    const refreshContext = () => {
+    const refreshContext = async () => {
       try {
-        setStoredContext({
-          itrDraft: JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_DRAFT) || "null"),
-          itrSummary: JSON.parse(localStorage.getItem(STORAGE_KEYS.ITR_SUMMARY) || "null"),
-          aisImport: JSON.parse(localStorage.getItem(STORAGE_KEYS.AIS_IMPORT) || "null"),
-          extractionReview: JSON.parse(
-            localStorage.getItem(STORAGE_KEYS.EXTRACTION_REVIEW) || "[]"
-          ),
-          deductions: JSON.parse(localStorage.getItem(STORAGE_KEYS.DEDUCTIONS) || "null"),
-          verifiedPan: maskPan(localStorage.getItem(STORAGE_KEYS.VERIFIED_PAN)),
-          taxpayerProfile: JSON.parse(
-            localStorage.getItem(STORAGE_KEYS.TAXPAYER_PROFILE) || "null"
-          ),
+        const localContext: Record<string, unknown> = {
+          itrDraft: null,
+          itrSummary: null,
+          aisImport: null,
+          extractionReview: [],
+          deductions: null,
+          taxpayerProfile: null,
           user: safeUserContext(localStorage.getItem(STORAGE_KEYS.USER)),
-        });
-        setAuditTrail(readAuditTrail());
+        };
+        const token = localStorage.getItem("token");
+
+        if (token) {
+          try {
+            const res = await fetch("/api/tax-context", {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await res.json();
+            const taxContext = data.data || data;
+            if (res.ok && taxContext) {
+              localContext.itrDraft = taxContext.draft || null;
+              localContext.aisImport = taxContext.aisImport || null;
+              localContext.extractionReview = taxContext.extractionReview || [];
+              localContext.deductions = taxContext.deductions || null;
+              localContext.taxpayerProfile = taxContext.taxpayerProfile || null;
+              localContext.user = taxContext.user || localContext.user;
+              localContext.imports = taxContext.imports || [];
+              localContext.taxIntelligence = taxContext.intelligence || null;
+              localContext.backendTaxIntelligence = taxContext.taxIntelligence || null;
+              localContext.provenance = taxContext.provenance || {};
+              setAuditTrail(
+                ((taxContext.auditTimeline || []) as AuditEntry[])
+                  .slice(0, MAX_AUDIT_ENTRIES)
+              );
+            }
+          } catch {
+            // Assistant will stay honest and avoid tax estimates without backend context.
+          }
+        }
+
+        setStoredContext(localContext);
       } catch {
         setStoredContext({});
       }
     };
 
-    refreshContext();
+    void refreshContext();
     window.addEventListener("taxbee:storage-updated", refreshContext);
     return () => window.removeEventListener("taxbee:storage-updated", refreshContext);
   }, [isOpen, pathname]);
@@ -410,11 +503,33 @@ export default function BeeAssistant({
         deductions: storedContext.deductions,
         aisImport: storedContext.aisImport,
       });
+      const backendTaxIntelligence = storedContext.backendTaxIntelligence || storedContext.taxIntelligence;
+      const draft = storedContext.itrDraft as
+        | {
+            salary?: Record<string, unknown>;
+            houseProperty?: Record<string, unknown>;
+            pgbp?: Record<string, unknown>;
+            capitalGains?: Record<string, unknown>;
+            otherSources?: Record<string, unknown>;
+          }
+        | null
+        | undefined;
+      const hasTaxData =
+        Boolean(storedContext.aisImport) ||
+        Boolean((storedContext.extractionReview as unknown[])?.length) ||
+        hasAnyAmount(storedContext.deductions) ||
+        hasAnyAmount(draft?.salary) ||
+        hasAnyAmount(draft?.houseProperty) ||
+        hasAnyAmount(draft?.pgbp) ||
+        hasAnyAmount(draft?.capitalGains) ||
+        hasAnyAmount(draft?.otherSources);
 
       return {
         ...storedContext,
         ...context,
-        taxIntelligence,
+        taxIntelligence: backendTaxIntelligence || taxIntelligence,
+        legacyTaxIntelligence: taxIntelligence,
+        hasTaxData,
         site: {
           currentPath: pathname,
           currentPage: TAXBEE_SITE_MAP.find((page) => page.route === pathname) || null,
@@ -495,7 +610,11 @@ export default function BeeAssistant({
   }, [checklist]);
 
   const copilotSnapshot = useMemo(() => {
-    const taxIntelligence = assistantContext.taxIntelligence as ReturnType<typeof buildTaxIntelligence>;
+    const taxIntelligence = (
+      (assistantContext.legacyTaxIntelligence as ReturnType<typeof buildTaxIntelligence> | undefined) ||
+      ((assistantContext.taxIntelligence as { legacy?: ReturnType<typeof buildTaxIntelligence> } | undefined)?.legacy) ||
+      assistantContext.taxIntelligence
+    ) as ReturnType<typeof buildTaxIntelligence>;
     const extractionReview = (storedContext.extractionReview || []) as ExtractionReviewRecord[];
     const unconfirmedFields = extractionReview.filter((record) => record.status === "extracted");
     const overriddenFields = extractionReview.filter((record) => record.status === "overridden");
@@ -543,6 +662,7 @@ export default function BeeAssistant({
       riskRows,
       missingDocs,
     } = copilotSnapshot;
+    const hasTaxData = Boolean(assistantContext.hasTaxData);
     const bestTax = Math.min(
       taxIntelligence.analysis.tax.oldRegimeEstimatedTax,
       taxIntelligence.analysis.tax.newRegimeEstimatedTax
@@ -551,6 +671,10 @@ export default function BeeAssistant({
       taxIntelligence.analysis.tax.betterRegime === "same"
         ? "either regime"
         : `${taxIntelligence.analysis.tax.betterRegime} regime`;
+
+    if (!hasTaxData && /\b(tax|refund|due|risk|score|regime|saving|deduction|80c|80d|income|itr|file|filing)\b/.test(normalized)) {
+      return "I do not have real tax data for you yet, so I will not estimate tax, refunds, risk, savings, or regime choice. Import AIS/Form 26AS, upload readable Form 16 data, or save income and deduction values first.";
+    }
 
     if (/\b(what should i do|next|best action|do next|priority)\b/.test(normalized)) {
       const action = unconfirmedFields.length
@@ -757,8 +881,8 @@ export default function BeeAssistant({
     return suggestions.slice(0, 3);
   }, [checklist, pathname, readinessScore, storedContext.aisImport, storedContext.itrDraft]);
 
-  const addAssistantMessage = (text: string, guideOfferId?: string) => {
-    const assistantMessage: Message = { sender: "assistant", text, guideOfferId };
+  const addAssistantMessage = (text: string, guideOfferId?: string, explainability?: Explainability) => {
+    const assistantMessage: Message = { sender: "assistant", text, guideOfferId, explainability };
     setMessages((prev) =>
       [...prev, assistantMessage].slice(-MAX_STORED_MESSAGES)
     );
@@ -766,20 +890,10 @@ export default function BeeAssistant({
     // saveToBackend(assistantMessage);
   };
 
-  const applyAction = (action: AssistantAction) => {
+  const applyAction = async (action: AssistantAction) => {
     if (action.type === "set_local_storage") {
       try {
-        const parsed = JSON.parse(localStorage.getItem(action.key) || "{}");
-        const current =
-          parsed && typeof parsed === "object" && !Array.isArray(parsed)
-            ? (parsed as Record<string, unknown>)
-            : {};
-        const oldValue = getNestedValue(current, action.path);
-
-        // Validation logic should live here or in a hook
-        setNestedValue(current, action.path, action.value);
-        localStorage.setItem(action.key, JSON.stringify(current));
-
+        const { oldValue } = await saveAssistantFieldToMongo(action);
         const auditEntry: AuditEntry = {
           id: `${Date.now()}-${action.key}-${action.path}`,
           timestamp: Date.now(),
@@ -789,11 +903,7 @@ export default function BeeAssistant({
           oldValue,
           newValue: action.value,
         };
-        const nextAuditTrail = [auditEntry, ...readAuditTrail()].slice(
-          0,
-          MAX_AUDIT_ENTRIES
-        );
-        localStorage.setItem(STORAGE_KEYS.AUDIT_TRAIL, JSON.stringify(nextAuditTrail));
+        const nextAuditTrail = [auditEntry, ...auditTrail].slice(0, MAX_AUDIT_ENTRIES);
         localStorage.setItem(
           STORAGE_KEYS.HIGHLIGHT,
           JSON.stringify({
@@ -809,13 +919,13 @@ export default function BeeAssistant({
         // instead of raw Window events.
         notifyStateChange(action.key, action.path);
 
-        addAssistantMessage(`${action.label || "Updated the draft"}.`);
+        addAssistantMessage(`${action.label || "Updated the draft"} and saved it to MongoDB.`);
 
         if (action.route && action.route !== pathname) {
           router.push(action.route);
         }
       } catch {
-        addAssistantMessage("I could not update that field automatically.");
+        addAssistantMessage("I could not update that field automatically. No browser-only tax data was saved.");
       }
     }
 
@@ -829,6 +939,29 @@ export default function BeeAssistant({
         `I found these items to review:\n${action.issues.join("\n")}`
       );
     }
+
+    if (action.type === "create_reviewer_comment") {
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) throw new Error("Missing token");
+        const res = await fetch("/api/collaboration/comments", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            fieldKey: action.fieldKey || "",
+            comment: action.comment,
+            entityType: action.fieldKey ? "tax_field" : "workspace",
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        addAssistantMessage(data.message || (res.ok ? "Reviewer comment saved to MongoDB." : "Could not save reviewer comment."));
+      } catch {
+        addAssistantMessage("I could not create that reviewer comment. No local-only comment was saved.");
+      }
+    }
   };
 
   const executeActions = (actions: AssistantAction[] = [], sourceMessage = "") => {
@@ -838,13 +971,13 @@ export default function BeeAssistant({
         shouldShowValidationSummary(sourceMessage)
     );
     const actionsNeedingConfirmation = safeActions.filter(
-      (action) => action.type === "set_local_storage"
+      (action) => action.type === "set_local_storage" || action.type === "create_reviewer_comment"
     );
     const immediateActions = safeActions.filter(
       (action) => action.type !== "set_local_storage"
     );
 
-    immediateActions.forEach(applyAction);
+    immediateActions.forEach((action) => void applyAction(action));
 
     if (actionsNeedingConfirmation.length > 0) {
       setPendingActions(actionsNeedingConfirmation);
@@ -853,7 +986,7 @@ export default function BeeAssistant({
   };
 
   const applyPendingActions = () => {
-    pendingActions.forEach(applyAction);
+    pendingActions.forEach((action) => void applyAction(action));
     setPendingActions([]);
   };
 
@@ -1000,7 +1133,9 @@ export default function BeeAssistant({
 
     if (handleWorkflowCommand(userMessage)) return;
 
-    const groundedReply = getGroundedCopilotReply(userMessage);
+    const groundedReply = /\b(guide|open|go to|take me|next page)\b/i.test(userMessage)
+      ? getGroundedCopilotReply(userMessage)
+      : null;
     if (groundedReply) {
       addAssistantMessage(groundedReply);
       return;
@@ -1057,7 +1192,9 @@ export default function BeeAssistant({
         data.reply ||
           (res.ok
             ? "Sorry, I couldn’t understand that."
-            : "Bee Assistant request failed.")
+            : "Bee Assistant request failed."),
+        undefined,
+        data.explainability
       );
       if (Array.isArray(data.actions)) {
         executeActions(data.actions, userMessage);
@@ -1089,6 +1226,42 @@ export default function BeeAssistant({
         {index < text.split("\n").length - 1 && <br />}
       </span>
     ));
+
+  const renderExplainability = (explainability?: Explainability) => {
+    if (!explainability) return null;
+    const basedOn = explainability.basedOn || [];
+    const warnings = explainability.warnings || [];
+    const missingData = explainability.missingData || [];
+    const sourceFields = explainability.sourceFields || [];
+    const sourceDocuments = explainability.sourceDocuments || [];
+    const auditRefs = explainability.auditRefs || [];
+    const basis = explainability.calculationBasis || [];
+    const states = explainability.dataStates;
+
+    return (
+      <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-[11px] leading-5 text-slate-300">
+        <div className="flex flex-wrap gap-2">
+          {typeof explainability.confidence === "number" && (
+            <span className="rounded border border-yellow-400/30 px-2 py-0.5 text-yellow-200">
+              Confidence {explainability.confidence}/100
+            </span>
+          )}
+          {states && (
+            <span className="rounded border border-slate-600 px-2 py-0.5">
+              {states.confirmed || 0} confirmed · {states.extracted || 0} extracted · {states.overridden || 0} overridden
+            </span>
+          )}
+        </div>
+        {basedOn.length > 0 && <div className="mt-2">Based on: {basedOn.slice(0, 4).join(", ")}</div>}
+        {sourceFields.length > 0 && <div>Fields: {sourceFields.slice(0, 4).join(", ")}</div>}
+        {sourceDocuments.length > 0 && <div>Sources: {sourceDocuments.slice(0, 3).join(", ")}</div>}
+        {basis.length > 0 && <div>Basis: {basis.slice(0, 2).join(" ")}</div>}
+        {missingData.length > 0 && <div className="text-amber-200">Missing: {missingData.slice(0, 4).join(", ")}</div>}
+        {warnings.length > 0 && <div className="text-red-200">Warnings: {warnings.slice(0, 3).join(" ")}</div>}
+        {auditRefs.length > 0 && <div>Audit refs: {auditRefs.slice(0, 3).join(", ")}</div>}
+      </div>
+    );
+  };
 
   const clearChat = () => {
     setMessages(INITIAL_MESSAGES);
@@ -1349,10 +1522,10 @@ export default function BeeAssistant({
                 <div className="space-y-2">
                   {auditTrail.slice(0, 2).map((entry) => (
                     <div key={entry.id} className="text-xs text-gray-300">
-                      <div className="font-semibold text-gray-100">{entry.label}</div>
+                      <div className="font-semibold text-gray-100">{entry.label || entry.eventType || "Audit event"}</div>
                       <div className="text-gray-500">
-                        {entry.path}: {String(entry.oldValue ?? "empty")} {"->"}{" "}
-                        {entry.newValue}
+                        {entry.path || entry.fieldKey || "document"}: {String(entry.oldValue ?? "empty")} {"->"}{" "}
+                        {String(entry.newValue ?? "empty")}
                       </div>
                     </div>
                   ))}
@@ -1427,6 +1600,7 @@ export default function BeeAssistant({
                   }`}
                 >
                   {renderMessageText(msg.text)}
+                  {msg.sender === "assistant" ? renderExplainability(msg.explainability) : null}
                   {messageGuide ? renderGuideOffer(messageGuide, index) : null}
                 </div>
               );

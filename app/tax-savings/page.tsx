@@ -1,21 +1,12 @@
 'use client';
 
 import Image from 'next/image';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import BeeAssistantProvider from '@/components/BeeAssistantProvider';
-import { STORAGE_KEYS } from '@/backend/utils/siteMap';
-import { buildTaxIntelligence } from '@/backend/utils/taxEngine';
+import { statusForTaxLoadFailure } from '@/app/_utils/taxStatus';
 
 type SidebarIcon = 'dashboard' | 'file' | 'savings' | 'documents' | 'help';
-type AmountMap = Record<string, string | number | undefined>;
-type DraftState = {
-  salary?: AmountMap;
-  houseProperty?: AmountMap;
-  pgbp?: AmountMap;
-  capitalGains?: AmountMap;
-  otherSources?: AmountMap;
-};
 type SavingRecommendation = {
   title: string;
   detail: string;
@@ -40,15 +31,6 @@ const sidebarItems = [
   { icon: 'help' as SidebarIcon, label: 'Help', route: '/help' },
 ];
 
-const readJson = <T,>(key: string, fallback: T): T => {
-  try {
-    const saved = localStorage.getItem(key);
-    return saved ? (JSON.parse(saved) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-
 function SidebarIconView({ icon }: { icon: SidebarIcon }) {
   const iconClass = 'h-5 w-5';
   if (icon === 'dashboard') return <svg viewBox="0 0 24 24" className={iconClass} fill="none"><path d="M4 5h7v6H4V5ZM13 5h7v4h-7V5ZM13 11h7v8h-7v-8ZM4 13h7v6H4v-6Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg>;
@@ -61,29 +43,41 @@ function SidebarIconView({ icon }: { icon: SidebarIcon }) {
 export default function TaxSavingsPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const [draft, setDraft] = useState<DraftState>({});
-  const [deductions, setDeductions] = useState<AmountMap>({});
-  const [aisImport, setAisImport] = useState<unknown>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [status, setStatus] = useState('');
+  const [hasTaxData, setHasTaxData] = useState(false);
+  const [scenarios, setScenarios] = useState<ScenarioComparison[]>([]);
+  const [recommendations, setRecommendations] = useState<NonNullable<SavingRecommendation>[]>([]);
 
   useEffect(() => {
-    const refresh = () => {
-      setDraft(readJson<DraftState>(STORAGE_KEYS.ITR_DRAFT, {}));
-      setDeductions(readJson<AmountMap>(STORAGE_KEYS.DEDUCTIONS, {}));
-      setAisImport(readJson<unknown>(STORAGE_KEYS.AIS_IMPORT, null));
+    const loadSavings = async () => {
+      try {
+        const res = await fetch('/api/tax-savings');
+        const data = await res.json();
+        if (!res.ok || data?.success === false) {
+          setStatus(
+            statusForTaxLoadFailure({
+              res,
+              data,
+              emptyMessage: 'Import documents to calculate tax savings',
+              fallbackMessage: 'Could not load tax savings from MongoDB.',
+            })
+          );
+          return;
+        }
+        setHasTaxData(Boolean(data.data?.hasTaxData));
+        setScenarios(data.data?.scenarios || []);
+        setRecommendations((data.data?.opportunities || data.data?.recommendations || []).filter(Boolean));
+        setStatus(data.data?.hasTaxData ? '' : 'Import documents to calculate tax savings');
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : 'Could not load tax savings from MongoDB.');
+      } finally {
+        setIsLoading(false);
+      }
     };
-    refresh();
-    window.addEventListener('taxbee:storage-updated', refresh);
-    return () => window.removeEventListener('taxbee:storage-updated', refresh);
-  }, []);
 
-  const intelligence = useMemo(
-    () => buildTaxIntelligence({ currentDraft: draft, deductions, aisImport }),
-    [aisImport, deductions, draft]
-  );
-  const scenarios = intelligence.explanation.scenarioComparison as ScenarioComparison[];
-  const recommendations = (intelligence.recommendations as SavingRecommendation[]).filter(
-    (item): item is NonNullable<SavingRecommendation> => Boolean(item)
-  );
+    void loadSavings();
+  }, []);
   const bestScenario = scenarios
     .filter((scenario) => scenario.savingVsCurrent > 0)
     .sort((a, b) => b.savingVsCurrent - a.savingVsCurrent)[0];
@@ -113,6 +107,11 @@ export default function TaxSavingsPage() {
           <div>
             <h1 className="text-4xl font-bold text-gray-900">Tax Savings</h1>
             <p className="mt-2 text-lg text-gray-500">Personalized savings opportunities from your current draft and deduction data.</p>
+            {(isLoading || status) && (
+              <p className="mt-2 text-sm font-semibold text-amber-700">
+                {isLoading ? 'Loading savings from MongoDB...' : status}
+              </p>
+            )}
           </div>
           <button onClick={() => router.push('/deductions')} className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white hover:bg-blue-700">Edit deductions</button>
         </div>
@@ -123,17 +122,23 @@ export default function TaxSavingsPage() {
           <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-700">
             {bestScenario?.detail || 'Add income and deduction details so TaxBee can simulate savings more accurately.'}
           </p>
-          <p className="mt-4 text-2xl font-bold text-green-700">{formatMoney(bestScenario?.savingVsCurrent || 0)}</p>
+          <p className="mt-4 text-2xl font-bold text-green-700">
+            {bestScenario ? formatMoney(bestScenario.savingVsCurrent) : 'Not calculated'}
+          </p>
         </section>
 
         <section className="mb-6 grid gap-4 md:grid-cols-3">
-          {recommendations.slice(0, 3).map((item, index) => (
+          {hasTaxData && recommendations.length > 0 ? recommendations.slice(0, 3).map((item, index) => (
             <div key={`${item.title}-${index}`} className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
               <h2 className="text-xl font-bold text-gray-900">{item.title}</h2>
               <p className="mt-3 text-sm leading-6 text-gray-600">{item.detail}</p>
               <p className="mt-4 text-lg font-bold text-green-700">{formatMoney(item.impact || 0)}</p>
             </div>
-          ))}
+          )) : (
+            <div className="rounded-2xl border border-gray-200 bg-white p-6 text-sm font-medium text-gray-600 shadow-sm md:col-span-3">
+              Import AIS/Form 26AS or save income values before TaxBee shows savings estimates.
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
@@ -144,14 +149,20 @@ export default function TaxSavingsPage() {
                 <tr><th className="px-4 py-3">Scenario</th><th className="px-4 py-3">Tax</th><th className="px-4 py-3">Saving</th><th className="px-4 py-3">Why</th></tr>
               </thead>
               <tbody>
-                {scenarios.map((scenario) => (
+                {hasTaxData && scenarios.length > 0 ? scenarios.map((scenario) => (
                   <tr key={scenario.id} className="border-t border-gray-200">
                     <td className="px-4 py-3 font-bold text-gray-900">{scenario.label}</td>
                     <td className="px-4 py-3">{formatMoney(scenario.tax)}</td>
                     <td className="px-4 py-3 font-bold text-green-700">{formatMoney(scenario.savingVsCurrent)}</td>
                     <td className="px-4 py-3 text-gray-600">{scenario.detail}</td>
                   </tr>
-                ))}
+                )) : (
+                  <tr className="border-t border-gray-200">
+                    <td className="px-4 py-8 text-center text-gray-500" colSpan={4}>
+                      No savings scenarios are shown until real income data is available.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

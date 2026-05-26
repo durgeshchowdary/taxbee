@@ -96,6 +96,20 @@ const getValidationAction = (analysis) => {
   };
 };
 
+const getReviewerCommentAction = (message = "") => {
+  const normalized = message.toLowerCase();
+  if (!/\b(comment|note|review note)\b/.test(normalized)) return null;
+  if (!/\b(reviewer|ca|client|workspace)\b/.test(normalized)) return null;
+
+  const fieldMatch = message.match(/\b(?:field|for)\s+([a-zA-Z0-9_.]+)/);
+  return {
+    type: "create_reviewer_comment",
+    fieldKey: fieldMatch?.[1] || "",
+    comment: message.slice(0, 500),
+    label: "Create reviewer comment",
+  };
+};
+
 const shouldShowValidationSummary = (message = "") => {
   const normalized = message.toLowerCase();
   return [
@@ -242,12 +256,14 @@ const getStorageUpdateAction = (message = "") => {
 export const buildAssistantActions = ({ message, taxAnalysis }) => {
   const actions = [];
   const storageAction = getStorageUpdateAction(message);
+  const reviewerCommentAction = storageAction ? null : getReviewerCommentAction(message);
   const routeAction = storageAction ? null : getRouteAction(message);
   const validationAction = shouldShowValidationSummary(message)
     ? getValidationAction(taxAnalysis)
     : null;
 
   if (storageAction) actions.push(storageAction);
+  if (reviewerCommentAction) actions.push(reviewerCommentAction);
   if (routeAction) actions.push(routeAction);
   if (validationAction) actions.push(validationAction);
 
