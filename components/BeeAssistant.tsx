@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -18,12 +18,14 @@ import {
   WandSparkles,
   X,
   type LucideIcon,
+  Loader2,
 } from "lucide-react";
 import { TAXBEE_SITE_MAP, STORAGE_KEYS } from "@/backend/utils/siteMap";
 import { tokenize, calculateScore } from "@/backend/utils/nlp";
 import { GUIDES, HIGH_VALUE_TAX_TERMS } from "@/backend/utils/BeeAssistantConfig";
 import { buildTaxIntelligence } from "@/backend/utils/taxEngine";
 import { apiFetch, clearLegacyAuthToken } from "@/app/_utils/authClient";
+import getEmotionStyles, { type BeeEmotion } from "@/lib/assistant/ui-theme";
 import {
   classifyBeeAssistantIntent,
   isLocalBeeAssistantIntent,
@@ -37,10 +39,19 @@ export type Message = {
   text: string;
   guideOfferId?: string;
   explainability?: Explainability;
+  emotion?: BeeEmotion;
+  intent?: string;
+  showWorkflow?: boolean;
+  workflowConfig?: any;
 };
 
 type AssistantResponse = {
-  reply?: string;
+  message?: string;
+  reply?: string; // fallback
+  emotion?: BeeEmotion;
+  intent?: string;
+  showWorkflow?: boolean;
+  workflowConfig?: any;
   memorySummary?: string;
   actions?: AssistantAction[];
   explainability?: Explainability;
@@ -335,7 +346,7 @@ function ShaderAnimation({ status }: ShaderAnimationProps) {
 const INITIAL_MESSAGES: Message[] = [
   {
     sender: "assistant",
-    text: "Hi, I’m Bee Assistant. I can guide you through filing your ITR step by step.",
+    text: "Hi, Iâ€™m Bee Assistant. I can guide you through filing your ITR step by step.",
   },
 ];
 
@@ -531,6 +542,10 @@ export default function BeeAssistant({
   const [assistantStatus, setAssistantStatus] = useState<"ready" | "degraded">(
     "ready"
   );
+
+  // --- Typewriter & Conversational Pacing State ---
+  const [typingMessageId, setTypingMessageId] = useState<number | null>(null);
+  const [displayedText, setDisplayedText] = useState<Record<number, string>>({});
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -554,7 +569,7 @@ export default function BeeAssistant({
             if (user && user.name) {
               setMessages([{
                 sender: "assistant",
-                text: `Hi ${user.name}, I’m Bee Assistant. I can guide you through filing your ITR step by step.`
+                text: `Hi ${user.name}, Iâ€™m Bee Assistant. I can guide you through filing your ITR step by step.`
               }]);
             }
           } catch {
@@ -669,7 +684,7 @@ export default function BeeAssistant({
       if (!hasBeenGreeted) {
         const pageName = TAXBEE_SITE_MAP.find(p => p.route === pathname)?.title || section;
         addAssistantMessage(
-          `I see you're on the ${pageName} page. I'm specialized in Indian taxes 🐝 Let me help you with the specific rules or calculations for this section!`
+          `I see you're on the ${pageName} page. I'm specialized in Indian taxes ðŸ Let me help you with the specific rules or calculations for this section!`
         );
         sessionStorage.setItem(sectionKey, "true");
       }
@@ -1121,13 +1136,50 @@ export default function BeeAssistant({
     return replies[intent] || null;
   };
 
-  const addAssistantMessage = (text: string, guideOfferId?: string, explainability?: Explainability) => {
-    const assistantMessage: Message = { sender: "assistant", text, guideOfferId, explainability };
-    setMessages((prev) =>
-      [...prev, assistantMessage].slice(-MAX_STORED_MESSAGES)
-    );
-    // Sync with backend if logged in
-    // saveToBackend(assistantMessage);
+  const runTypewriter = (index: number, fullText: string) => {
+    setTypingMessageId(index);
+    let currentText = "";
+    const parts = fullText.split(/(\s+)/);
+    let partIndex = 0;
+
+    const interval = window.setInterval(() => {
+      if (partIndex < parts.length) {
+        currentText += parts[partIndex];
+        setDisplayedText((prev) => ({ ...prev, [index]: currentText }));
+        partIndex++;
+      } else {
+        window.clearInterval(interval);
+        setTypingMessageId(null);
+      }
+    }, 35);
+  };
+
+  const addAssistantMessage = (
+    text: string,
+    guideOfferId?: string,
+    explainability?: Explainability,
+    emotion: BeeEmotion = "neutral",
+    intent?: string,
+    showWorkflow: boolean = false,
+    workflowConfig: any = null
+  ) => {
+    const assistantMessage: Message = {
+      sender: "assistant",
+      text,
+      guideOfferId,
+      explainability,
+      emotion,
+      intent,
+      showWorkflow,
+      workflowConfig,
+    };
+
+    setMessages((prev) => {
+      const newMessages = [...prev, assistantMessage].slice(-MAX_STORED_MESSAGES);
+      const index = newMessages.length - 1;
+      setTimeout(() => runTypewriter(index, text), 50);
+      return newMessages;
+    });
   };
 
   const applyAction = async (action: AssistantAction) => {
@@ -1457,18 +1509,20 @@ export default function BeeAssistant({
         data = text ? (JSON.parse(text) as AssistantResponse) : {};
       } catch {
         data = {
-          reply: text || "Bee Assistant returned an unreadable response.",
+          message: text || "Bee Assistant returned an unreadable response.",
           degraded: true,
           retryable: true,
         };
       }
+
+      const finalReply = data.message || data.reply;
 
       setAssistantStatus(data.degraded || !res.ok ? "degraded" : "ready");
       if (res.status === 401) {
         clearLegacyAuthToken();
         data = {
           ...data,
-          reply: "Your TaxBee session has expired. Please log in again, then reopen Bee Assistant.",
+          message: "Your TaxBee session has expired. Please log in again, then reopen Bee Assistant.",
           degraded: true,
           retryable: false,
         };
@@ -1482,12 +1536,16 @@ export default function BeeAssistant({
       }
 
       addAssistantMessage(
-        data.reply ||
+        finalReply ||
           (res.ok
-            ? "Sorry, I couldn’t understand that."
+            ? "Sorry, I couldnâ€™t understand that."
             : "Bee Assistant request failed."),
         undefined,
-        data.explainability
+        data.explainability,
+        data.emotion,
+        data.intent,
+        data.showWorkflow,
+        data.workflowConfig
       );
       if (Array.isArray(data.actions)) {
         executeActions(data.actions, userMessage);
@@ -1541,7 +1599,7 @@ export default function BeeAssistant({
           )}
           {states && (
             <span className="rounded-full border border-cyan-100 bg-cyan-50 px-2 py-0.5 text-cyan-800">
-              {states.confirmed || 0} confirmed · {states.extracted || 0} extracted · {states.overridden || 0} overridden
+              {states.confirmed || 0} confirmed Â· {states.extracted || 0} extracted Â· {states.overridden || 0} overridden
             </span>
           )}
         </div>
@@ -1561,6 +1619,8 @@ export default function BeeAssistant({
     setActiveGuideId(null);
     setActiveStepIndex(null);
     setConversationMode("welcome");
+    setTypingMessageId(null);
+    setDisplayedText({});
     localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
     localStorage.removeItem(STORAGE_KEYS.MEMORY);
     localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
@@ -1678,288 +1738,148 @@ export default function BeeAssistant({
           >
             <div className="relative h-[162px] shrink-0 overflow-visible">
               <ShaderAnimation status={assistantStatus} />
-              <div className="absolute inset-0 flex flex-col justify-between p-5 text-white">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase text-white/80">
-                      <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_18px_rgba(110,231,183,0.95)]" />
-                      {assistantStatus === "ready" ? "Ready" : "Degraded mode"}
-                    </div>
-                    <h2 className="mt-2 text-2xl font-bold text-white drop-shadow-sm">
-                      Bee Assistant
-                    </h2>
-                    <p className="mt-1 max-w-[270px] text-xs leading-5 text-white/82">
-                      AI tax copilot with grounded review, filing guidance, and memory.
-                    </p>
+              <div className="absolute inset-0 flex flex-col justify-end p-6 text-white">
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+                  <div className="flex items-center gap-2 text-white/80">
+                    <Bot className="h-4 w-4" />
+                    <span className="text-xs font-medium uppercase tracking-wider">Bee Copilot</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={toggleMemory}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-white/35 bg-white/18 px-3 py-1.5 text-xs font-semibold text-white shadow-sm backdrop-blur-xl transition hover:bg-white/28 focus:outline-none focus:ring-2 focus:ring-white/70"
-                      title="Turn saved assistant memory on or off"
-                    >
-                      <Brain className="h-3.5 w-3.5" />
-                      {memoryEnabled ? "Memory" : "Off"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearChat}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/35 bg-white/18 text-white shadow-sm backdrop-blur-xl transition hover:bg-white/28 focus:outline-none focus:ring-2 focus:ring-white/70"
-                      aria-label="Clear chat"
-                      title="Clear chat"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsOpen(false)}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/35 bg-white/18 text-white shadow-sm backdrop-blur-xl transition hover:bg-white/28 focus:outline-none focus:ring-2 focus:ring-white/70"
-                      aria-label="Close Bee Assistant"
-                      title="Close"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <motion.div
-                animate={{ y: [0, -3, 0], scale: [1, 1.025, 1] }}
-                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-                className="absolute -bottom-8 left-5 flex h-16 w-16 items-center justify-center rounded-3xl border border-white/70 bg-white/72 shadow-[0_16px_50px_rgba(79,70,229,0.26)] backdrop-blur-2xl"
-              >
-                <div className="absolute inset-1 rounded-[1.35rem] bg-gradient-to-br from-violet-500/14 via-indigo-500/10 to-cyan-400/20" />
-                <Bot className="relative h-8 w-8 text-violet-700" />
-              </motion.div>
-            </div>
-
-            {hasActiveAssistantWork ? (
-              <>
-                {activeStep && (
-                  <div className="mx-4 mt-10 rounded-3xl border border-indigo-100 bg-white/68 p-4 text-xs shadow-sm shadow-indigo-100/60 backdrop-blur-xl sm:mx-5">
-                    <div className="mb-2 flex items-center justify-between gap-3 text-violet-700">
-                      <span className="font-bold uppercase">
-                        {activeGuide?.title}: Step {activeStepIndex! + 1} of {activeGuide?.steps.length}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveStepIndex(null);
-                          setActiveGuideId(null);
-                          localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
-                        }}
-                        className="rounded-full px-2 py-1 font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-                      >
-                        Stop
-                      </button>
-                    </div>
-                    <div className="text-sm font-bold text-slate-950">{activeStep.label}</div>
-                    <div className="mt-1 leading-5 text-slate-600">{activeStep.instruction}</div>
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => activeGuide && navigateToStep(activeGuide, Math.max(activeStepIndex! - 1, 0))}
-                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-600 shadow-sm disabled:opacity-40"
-                        disabled={activeStepIndex === 0}
-                      >
-                        Back
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const nextIndex = activeStepIndex! + 1;
-                          if (!activeGuide || nextIndex >= activeGuide.steps.length) {
-                            completeWorkflow();
-                          } else {
-                            navigateToStep(activeGuide, nextIndex);
-                          }
-                        }}
-                        className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 px-3 py-1.5 font-semibold text-white shadow-lg shadow-indigo-500/20"
-                      >
-                        {activeGuide && activeStepIndex === activeGuide.steps.length - 1 ? "Finish" : "Next"}
-                        <ChevronRight className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <div className={`flex-1 space-y-4 overflow-y-auto px-4 pb-4 pt-10 sm:px-5 ${activeStep ? "pt-4" : ""}`}>
-                  {pendingActions.length > 0 && (
-                    <section className="rounded-3xl border border-violet-200 bg-violet-50/80 p-4 shadow-lg shadow-violet-200/30 backdrop-blur-xl">
-                      <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase text-violet-700">
-                        <ShieldCheck className="h-4 w-4" />
-                        Confirm update
-                      </div>
-                      <div className="space-y-1 text-xs text-slate-700">
-                        {pendingActions.map((action, index) => (
-                          <div key={`${action.type}-${index}`}>
-                            {action.type === "set_local_storage" ? action.label || "Update draft field" : action.label || "Assistant action"}
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-3 flex gap-2">
-                        <button type="button" onClick={applyPendingActions} className="rounded-full bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 px-4 py-1.5 text-xs font-semibold text-white shadow-lg shadow-indigo-500/20">
-                          Apply
-                        </button>
-                        <button type="button" onClick={cancelPendingActions} className="rounded-full border border-slate-200 bg-white px-4 py-1.5 text-xs font-semibold text-slate-600">
-                          Cancel
-                        </button>
-                      </div>
-                    </section>
-                  )}
-
-                  {lastFailedMessage && (
-                    <section className="rounded-3xl border border-rose-200 bg-rose-50/85 p-4 shadow-sm backdrop-blur-xl">
-                      <div className="text-xs font-semibold text-rose-800">Last request did not complete</div>
-                      <div className="mt-1 line-clamp-2 text-xs text-rose-700">{lastFailedMessage}</div>
-                      <button type="button" onClick={() => void sendMessage(lastFailedMessage)} disabled={loading} className="mt-3 rounded-full bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
-                        Retry
-                      </button>
-                    </section>
-                  )}
-
-                  {smartSuggestions.length > 0 && conversationMode === "workflow" && (
-                    <section className="rounded-3xl border border-violet-100 bg-white/62 p-4 shadow-sm shadow-violet-100/60 backdrop-blur-xl">
-                      <div className="mb-3 flex items-center gap-2 text-xs font-bold uppercase text-violet-700">
-                        <WandSparkles className="h-4 w-4" />
-                        Next best actions
-                      </div>
-                      <div className="space-y-2">
-                        {smartSuggestions.map((suggestion, index) => (
-                          <motion.button
-                            key={`${suggestion.kind}-${suggestion.value}-${suggestion.label}-${index}`}
-                            type="button"
-                            onClick={() => runSmartSuggestion(suggestion)}
-                            disabled={loading}
-                            whileHover={{ x: 2 }}
-                            className="group relative w-full overflow-hidden rounded-2xl border border-indigo-100 bg-white/72 px-3 py-3 text-left text-xs text-slate-700 shadow-sm transition disabled:opacity-60"
-                          >
-                            <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/70 to-transparent opacity-0 transition duration-700 group-hover:translate-x-full group-hover:opacity-100" />
-                            <span className="relative flex items-start justify-between gap-3">
-                              <span>
-                                <span className="block font-semibold text-slate-950">{suggestion.label}</span>
-                                <span className="mt-1 block leading-5 text-slate-500">{suggestion.detail}</span>
-                              </span>
-                              <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" />
-                            </span>
-                          </motion.button>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-
-                  {messages.map((msg, index) => {
-                    const messageGuide = msg.guideOfferId ? GUIDES.find((guide) => guide.id === msg.guideOfferId) ?? null : null;
-
-                    return (
-                      <motion.div
-                        key={`${msg.sender}-${index}`}
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.22 }}
-                        className={`max-w-[88%] px-4 py-3 text-sm leading-6 shadow-sm ${msg.sender === "user" ? "ml-auto rounded-3xl rounded-br-lg bg-gradient-to-br from-violet-600 via-indigo-600 to-cyan-500 font-medium text-white shadow-indigo-500/20" : "rounded-3xl rounded-bl-lg border border-white/70 bg-white/72 text-slate-700 shadow-slate-200/70 backdrop-blur-xl"}`}
-                      >
-                        {renderMessageText(msg.text)}
-                        {msg.sender === "assistant" ? renderExplainability(msg.explainability) : null}
-                        {messageGuide ? renderGuideOffer(messageGuide, index) : null}
-                      </motion.div>
-                    );
-                  })}
-
-                  {loading && (
-                    <div className="flex w-fit items-center gap-1 rounded-3xl rounded-bl-lg border border-white/70 bg-white/72 px-4 py-3 shadow-sm backdrop-blur-xl">
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-violet-500 [animation-delay:-0.3s]" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500 [animation-delay:-0.15s]" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-500" />
-                    </div>
-                  )}
-                  <div ref={messagesEndRef} />
-                </div>
-              </>
-            ) : (
-              <div className="relative flex flex-1 items-center justify-center overflow-hidden px-5 py-10">
-                <div className="absolute left-8 top-10 h-28 w-28 rounded-full bg-cyan-300/25 blur-3xl" />
-                <div className="absolute bottom-12 right-8 h-32 w-32 rounded-full bg-violet-400/20 blur-3xl" />
-                <motion.div
-                  initial={{ opacity: 0, y: 18, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  transition={{ duration: 0.55, ease: "easeOut" }}
-                  className="relative w-full max-w-[350px] rounded-3xl border border-white/70 bg-white/68 px-6 py-8 text-center shadow-[0_24px_70px_rgba(79,70,229,0.16)] backdrop-blur-2xl"
-                >
-                  <motion.div
-                    animate={{ y: [0, -5, 0], scale: [1, 1.04, 1] }}
-                    transition={{ duration: 3.8, repeat: Infinity, ease: "easeInOut" }}
-                    className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-[1.75rem] border border-white/80 bg-white/75 shadow-[0_18px_55px_rgba(6,182,212,0.24)]"
-                  >
-                    <span className="absolute h-24 w-24 rounded-full bg-gradient-to-br from-violet-400/20 to-cyan-300/25 blur-xl" />
-                    <Bot className="relative h-10 w-10 text-violet-700" />
-                  </motion.div>
-                  <h3 className="text-2xl font-bold text-slate-950">
-                    Hi, I&apos;m <span className="bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent">Bee Assistant</span>.
-                  </h3>
-                  <p className="mx-auto mt-3 max-w-[280px] text-sm leading-6 text-slate-500">
-                    I can guide you through filing your ITR step by step.
-                  </p>
-                  <div className="mt-7 grid gap-2 sm:grid-cols-2">
-                    {welcomePrompts.map((prompt, index) => (
-                      <motion.button
-                        key={prompt.label}
-                        type="button"
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: 0.08 * index, duration: 0.32 }}
-                        whileHover={{ y: -2, scale: 1.02 }}
-                        whileTap={{ scale: 0.97 }}
-                        onClick={() => {
-                          if (prompt.action === "guide") {
-                            const guide = GUIDES.find((item) => item.id === prompt.value);
-                            if (guide) startGuide(guide, 0);
-                            return;
-                          }
-
-                          void sendMessage(prompt.value);
-                        }}
-                        className="rounded-full bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 px-4 py-2.5 text-xs font-semibold text-white shadow-lg shadow-indigo-500/20 transition"
-                      >
-                        {prompt.label}
-                      </motion.button>
-                    ))}
-                  </div>
+                  <h2 className="mt-1 text-2xl font-bold">How can I help?</h2>
                 </motion.div>
               </div>
-            )}
-            {hasActiveAssistantWork && (
-              <div className="border-t border-white/50 bg-white/42 px-4 py-3 backdrop-blur-2xl sm:px-5">
-                <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
-                  {quickPrompts.map((prompt) => {
-                    const PromptIcon = quickPromptIconMap[prompt.label] || Sparkles;
-                    return (
-                      <button key={prompt.label} type="button" onClick={() => void sendMessage(prompt.text)} disabled={loading} className="group relative shrink-0 overflow-hidden rounded-full border border-indigo-100 bg-white/72 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60">
-                        <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-violet-100/80 to-transparent opacity-0 transition duration-700 group-hover:translate-x-full group-hover:opacity-100" />
-                        <span className="relative flex items-center gap-1.5">
-                          <PromptIcon className="h-3.5 w-3.5" />
-                          {prompt.label}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+              <button
+                onClick={() => setIsOpen(false)}
+                className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white backdrop-blur-md transition hover:bg-white/20"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
 
-                <form onSubmit={handleSubmit} className="flex items-center gap-2 rounded-full border border-white/70 bg-white/75 p-1.5 shadow-[0_12px_40px_rgba(79,70,229,0.13)] backdrop-blur-xl focus-within:ring-2 focus-within:ring-violet-300/80">
-                  <input
-                    type="text"
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder="Ask Bee about deductions, risks, regimes..."
-                    className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400"
-                    aria-label="Ask Bee Assistant"
-                  />
-                  <motion.button type="submit" disabled={loading} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-600 via-indigo-600 to-cyan-500 text-white shadow-lg shadow-indigo-500/25 transition disabled:cursor-not-allowed disabled:opacity-60" aria-label="Send message">
-                    <Send className="h-4 w-4" />
-                  </motion.button>
-                </form>
+            {/* Message List */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-8 scrollbar-hide bg-slate-50/50">
+              <AnimatePresence initial={false}>
+                {messages.map((message, index) => {
+                  const isAssistant = message.sender === "assistant";
+                  const isCurrentlyTyping = typingMessageId === index;
+                  const styles = isAssistant ? getEmotionStyles(message.emotion || 'neutral') : null;
+                  const textToShow = isCurrentlyTyping ? displayedText[index] : message.text;
+                  
+                  return (
+                    <motion.div
+                      key={index}
+                      layout
+                      initial={{ opacity: 0, y: 20, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      className={`flex ${isAssistant ? "justify-start" : "justify-end"}`}
+                    >
+                      <div className={`max-w-[85%] group`}>
+                        <div
+                          className={`p-4 rounded-3xl ${
+                            isAssistant
+                              ? (styles?.container || "") + " rounded-tl-none"
+                              : "bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-200"
+                          } ${styles?.bubble || ""}`}
+                        >
+                          <div className="text-sm leading-relaxed whitespace-pre-wrap">
+                            {renderMessageText(textToShow || "")}
+                          </div>
+                          
+                          {isAssistant && message.explainability && (
+                            <div className="mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {renderExplainability(message.explainability)}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Workflow Cards gated by showWorkflow */}
+                        {isAssistant && message.showWorkflow && !isCurrentlyTyping && (
+                          <motion.div 
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="mt-4"
+                          >
+                             {message.guideOfferId && renderGuideOffer(GUIDES.find(g => g.id === message.guideOfferId)!, index)}
+                             
+                             {pendingActions.length > 0 && index === messages.length - 1 && (
+                               <div className="mt-3 flex flex-wrap gap-2">
+                                 <button onClick={applyPendingActions} className="px-3 py-1.5 bg-indigo-600 text-white rounded-full text-xs font-semibold shadow-md">Apply Changes</button>
+                                 <button onClick={cancelPendingActions} className="px-3 py-1.5 bg-white border border-slate-200 rounded-full text-xs font-semibold">Discard</button>
+                               </div>
+                             )}
+                          </motion.div>
+                        )}
+                      </div>
+                    </motion.div>
+                  );
+                })}
+                
+                {loading && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                    <div className="bg-white/60 backdrop-blur-md border border-white/20 p-4 rounded-3xl rounded-tl-none flex gap-1.5">
+                      <motion.div 
+                        animate={{ opacity: [0.4, 1, 0.4] }} 
+                        transition={{ repeat: Infinity, duration: 1 }} 
+                        className="h-1.5 w-1.5 rounded-full bg-indigo-400" 
+                      />
+                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="h-1.5 w-1.5 rounded-full bg-indigo-400" />
+                      <motion.div animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="h-1.5 w-1.5 rounded-full bg-indigo-400" />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Smart Suggestion Chips */}
+            <AnimatePresence>
+              {!loading && typingMessageId === null && smartSuggestions.length > 0 && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 10 }} 
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="px-4 pb-2 flex gap-2 overflow-x-auto no-scrollbar scroll-smooth"
+                >
+                  {smartSuggestions.map((sug, i) => (
+                    <button
+                      key={i}
+                      onClick={() => runSmartSuggestion(sug)}
+                      className="shrink-0 px-4 py-2 bg-white/80 hover:bg-white border border-indigo-100 rounded-2xl text-xs font-medium text-indigo-700 transition shadow-sm hover:shadow-md whitespace-nowrap"
+                    >
+                      {sug.label}
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Modern Input Bar */}
+            <div className="p-4 bg-white/80 backdrop-blur-xl border-t border-indigo-50">
+              <form onSubmit={handleSubmit} className="relative flex items-center">
+                <input
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Ask anything about your taxes..."
+                  className="w-full bg-slate-100/50 border-none rounded-2xl py-3 pl-4 pr-12 text-sm focus:ring-2 focus:ring-indigo-500 transition-all outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={loading || !input.trim()}
+                  className="absolute right-2 p-2 bg-indigo-600 text-white rounded-xl disabled:opacity-50 disabled:bg-slate-400 transition shadow-lg shadow-indigo-200"
+                >
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                </button>
+              </form>
+              <div className="mt-3 flex items-center justify-between px-1">
+                 <button onClick={clearChat} className="text-[10px] font-medium text-slate-400 hover:text-slate-600 flex items-center gap-1 transition">
+                   <RotateCcw className="h-3 w-3" /> Clear Conversation
+                 </button>
+                 <button onClick={toggleMemory} className="text-[10px] font-medium text-slate-400 hover:text-slate-600 flex items-center gap-1 transition">
+                   <Brain className={`h-3 w-3 ${memoryEnabled ? 'text-indigo-500' : ''}`} /> 
+                   Memory: {memoryEnabled ? 'On' : 'Off'}
+                 </button>
               </div>
-            )}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
