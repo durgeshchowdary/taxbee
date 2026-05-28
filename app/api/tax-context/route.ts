@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authForwardHeaders, BACKEND_URL } from "@/app/api/_utils/backend";
+import { authForwardHeaders, BACKEND_URL, clearAuthCookieOptions, shouldClearAuthCookie } from "@/app/api/_utils/backend";
 
 const readJson = async (res: Response) => {
   const text = await res.text();
@@ -16,7 +16,12 @@ export async function GET(req: NextRequest) {
     const res = await fetch(`${BACKEND_URL}/api/tax-context${req.nextUrl.search}`, {
       headers: authForwardHeaders(req),
     });
-    return NextResponse.json(await readJson(res), { status: res.status });
+    const data = await readJson(res);
+    const response = NextResponse.json(data, { status: res.status });
+    if (shouldClearAuthCookie(res.status, data)) {
+      response.cookies.set("auth_token", "", clearAuthCookieOptions);
+    }
+    return response;
   } catch (error) {
     console.error("Tax context proxy error:", error);
     return NextResponse.json(

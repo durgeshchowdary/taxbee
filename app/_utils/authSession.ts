@@ -1,3 +1,5 @@
+import { apiFetch, logoutClientSession } from "./authClient";
+
 export type Portal = "taxpayer" | "reviewer" | "admin" | "verify-email";
 
 export type SessionUser = {
@@ -25,12 +27,12 @@ export const portalPath = (portal: Portal) => {
 };
 
 export const loadSession = async (): Promise<SessionData | null> => {
-  const res = await fetch("/api/auth/session", { cache: "no-store" });
+  const res = await apiFetch("/api/auth/session", { cache: "no-store" });
   if (!res.ok) return null;
   const body = await res.json().catch(() => ({}));
   return body?.data || null;
 };
 
 export const logoutSession = async () => {
-  await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+  await logoutClientSession();
 };

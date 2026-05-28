@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadSession, portalPath } from '@/app/_utils/authSession';
+import { clearLegacyAuthToken } from '@/app/_utils/authClient';
 
 type LoginResponse = {
   user?: unknown;
@@ -41,6 +42,7 @@ export default function LoginPage() {
   const handleLogin = async () => {
     setError('');
     setLoading(true);
+    clearLegacyAuthToken();
 
     if (!email || !password) {
       setError('Please enter email and password');
@@ -99,6 +101,7 @@ export default function LoginPage() {
       }
 
       setLoading(false);
+      clearLegacyAuthToken();
       router.push(portalPath(data.data?.defaultPortal || 'taxpayer'));
     } catch (err) {
       console.error(err);

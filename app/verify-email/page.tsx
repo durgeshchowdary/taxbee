@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { logoutSession, portalPath } from "@/app/_utils/authSession";
+import { clearLegacyAuthToken } from "@/app/_utils/authClient";
 
 type VerifyResponse = {
   data?: {
@@ -111,6 +112,7 @@ export default function VerifyEmailPage() {
       window.sessionStorage.removeItem("pendingVerificationEmail");
       window.sessionStorage.removeItem("pendingVerificationMessage");
       window.sessionStorage.removeItem("pendingVerificationDevOtp");
+      clearLegacyAuthToken();
       router.replace(portalPath(data.data?.defaultPortal || "taxpayer"));
     } catch (err) {
       console.error(err);

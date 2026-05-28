@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authForwardHeaders, BACKEND_URL } from "@/app/api/_utils/backend";
+import { authForwardHeaders, BACKEND_URL, clearAuthCookieOptions, shouldClearAuthCookie } from "@/app/api/_utils/backend";
 
 const BACKEND_TIMEOUT_MS = 35_000;
 
@@ -52,7 +52,11 @@ export async function POST(req: NextRequest) {
       data.reply = data.message;
     }
 
-    return NextResponse.json({ ...data, requestId }, { status: res.status });
+    const response = NextResponse.json({ ...data, requestId }, { status: res.status });
+    if (shouldClearAuthCookie(res.status, data)) {
+      response.cookies.set("auth_token", "", clearAuthCookieOptions);
+    }
+    return response;
   } catch (error) {
     console.error("Bee Assistant proxy error:", error);
     const isTimeout = error instanceof Error && error.name === "AbortError";

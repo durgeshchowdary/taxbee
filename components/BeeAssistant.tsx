@@ -2,10 +2,35 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  ArrowRight,
+  Bot,
+  Brain,
+  ChevronRight,
+  FileText,
+  PiggyBank,
+  RotateCcw,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  UploadCloud,
+  WandSparkles,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { TAXBEE_SITE_MAP, STORAGE_KEYS } from "@/backend/utils/siteMap";
 import { tokenize, calculateScore } from "@/backend/utils/nlp";
 import { GUIDES, HIGH_VALUE_TAX_TERMS } from "@/backend/utils/BeeAssistantConfig";
 import { buildTaxIntelligence } from "@/backend/utils/taxEngine";
+import { apiFetch, clearLegacyAuthToken } from "@/app/_utils/authClient";
+import {
+  classifyBeeAssistantIntent,
+  isLocalBeeAssistantIntent,
+  isWorkflowBeeAssistantIntent,
+  routeBeeAssistantIntent,
+  type BeeAssistantIntent,
+} from "@/app/_utils/beeAssistantIntent";
 
 export type Message = {
   sender: "user" | "assistant";
@@ -83,6 +108,12 @@ type SmartSuggestion = {
   value: string;
 };
 
+type WelcomePrompt = {
+  label: string;
+  action: "guide" | "message";
+  value: string;
+};
+
 type Explainability = {
   confidence?: number;
   basedOn?: string[];
@@ -132,10 +163,174 @@ type CopilotRisk = {
   action: string;
 };
 
+type ShaderAnimationProps = {
+  status: "ready" | "degraded";
+};
+
 const MAX_STORED_MESSAGES = 60;
 const MAX_HISTORY_MESSAGES = 40;
 const MAX_AUDIT_ENTRIES = 100;
 const ASSISTANT_TIMEOUT_MS = 40_000;
+
+const quickPromptIconMap: Record<string, LucideIcon> = {
+  "AIS Review": FileText,
+  "Filing Risks": ShieldCheck,
+  "Regime Advice": Brain,
+  "Start Filing": ArrowRight,
+  Deductions: ShieldCheck,
+  Documents: UploadCloud,
+  "Tax Savings": PiggyBank,
+};
+
+const welcomePrompts: WelcomePrompt[] = [
+  { label: "Start Filing", action: "guide", value: "file-itr" },
+  { label: "Upload Form 16", action: "guide", value: "documents" },
+  { label: "Check Deductions", action: "message", value: "Help me check deductions I might be missing." },
+  { label: "Compare Tax Regimes", action: "message", value: "Compare old and new tax regimes for me." },
+  { label: "What can you do?", action: "message", value: "What can you do?" },
+  { label: "Today's Tax Updates", action: "message", value: "What tax updates should I know about today?" },
+];
+
+const panelSpring = {
+  type: "spring" as const,
+  stiffness: 360,
+  damping: 34,
+};
+
+function ShaderAnimation({ status }: ShaderAnimationProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const gl = canvas.getContext("webgl", {
+      antialias: false,
+      alpha: true,
+      powerPreference: "low-power",
+    });
+    if (!gl) return;
+
+    const vertexSource = `
+      attribute vec2 position;
+      void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+      }
+    `;
+    const fragmentSource = `
+      precision mediump float;
+      uniform vec2 resolution;
+      uniform float time;
+
+      vec3 palette(float t) {
+        vec3 a = vec3(0.48, 0.23, 0.93);
+        vec3 b = vec3(0.31, 0.27, 0.90);
+        vec3 c = vec3(0.02, 0.71, 0.83);
+        return mix(mix(a, b, smoothstep(0.0, 1.0, t)), c, smoothstep(0.35, 1.0, t));
+      }
+
+      void main() {
+        vec2 uv = gl_FragCoord.xy / resolution.xy;
+        vec2 p = uv * 2.0 - 1.0;
+        p.x *= resolution.x / resolution.y;
+
+        float wave = sin((p.x * 2.4) + time * 0.55) * 0.18;
+        float flow = sin((p.y * 3.1) - time * 0.42 + cos(p.x * 2.0)) * 0.16;
+        float ribbon = smoothstep(0.72, 0.08, abs(p.y + wave + flow));
+        float glow = 0.42 / (0.36 + length(p - vec2(sin(time * 0.22) * 0.42, cos(time * 0.18) * 0.24)));
+        float t = clamp(uv.x + uv.y * 0.35 + ribbon * 0.22 + glow * 0.08, 0.0, 1.0);
+
+        vec3 color = palette(t);
+        color += ribbon * vec3(0.24, 0.42, 0.62);
+        color += glow * vec3(0.08, 0.16, 0.28);
+        color = mix(color, vec3(1.0), 0.08);
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `;
+
+    const compileShader = (type: number, source: string) => {
+      const shader = gl.createShader(type);
+      if (!shader) return null;
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        gl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    };
+
+    const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+    const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+    if (!vertexShader || !fragmentShader) return;
+
+    const program = gl.createProgram();
+    if (!program) return;
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return;
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+      gl.STATIC_DRAW
+    );
+
+    const position = gl.getAttribLocation(program, "position");
+    const resolution = gl.getUniformLocation(program, "resolution");
+    const time = gl.getUniformLocation(program, "time");
+    let frame = 0;
+    let start = performance.now();
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = Math.min(window.devicePixelRatio || 1, 1.75);
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      gl.viewport(0, 0, canvas.width, canvas.height);
+    };
+
+    const render = (now: number) => {
+      gl.useProgram(program);
+      gl.enableVertexAttribArray(position);
+      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+      gl.uniform2f(resolution, canvas.width, canvas.height);
+      gl.uniform1f(time, (now - start) / 1000);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      frame = window.requestAnimationFrame(render);
+    };
+
+    resize();
+    start = performance.now();
+    frame = window.requestAnimationFrame(render);
+    window.addEventListener("resize", resize);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", resize);
+      gl.deleteProgram(program);
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
+      if (buffer) gl.deleteBuffer(buffer);
+    };
+  }, []);
+
+  return (
+    <div className="absolute inset-0 overflow-hidden bg-[radial-gradient(circle_at_20%_0%,#7c3aed_0%,#4f46e5_42%,#06b6d4_100%)]">
+      <canvas ref={canvasRef} aria-hidden="true" className="h-full w-full opacity-95" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_85%_20%,rgba(255,255,255,0.7),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.1),rgba(255,255,255,0.38))]" />
+      <div className="absolute left-4 top-4 h-24 w-24 rounded-full bg-white/20 blur-2xl" />
+      <div
+        className={`absolute right-6 top-5 h-2 w-2 rounded-full ${
+          status === "ready" ? "bg-emerald-200" : "bg-amber-200"
+        } shadow-[0_0_26px_rgba(255,255,255,0.95)]`}
+      />
+    </div>
+  );
+}
 
 const INITIAL_MESSAGES: Message[] = [
   {
@@ -264,16 +459,12 @@ const setNestedValue = (
 };
 
 const saveAssistantFieldToMongo = async (action: Extract<AssistantAction, { type: "set_local_storage" }>) => {
-  const token = localStorage.getItem("token");
-  if (!token) throw new Error("Sign in before Bee Assistant can update tax data.");
-
   const headers = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
   };
 
   if (action.key === STORAGE_KEYS.DEDUCTIONS) {
-    const getRes = await fetch("/api/deductions", { headers });
+    const getRes = await apiFetch("/api/deductions", { headers });
     const getData = await getRes.json().catch(() => ({}));
     if (!getRes.ok) throw new Error(getData.message || "Could not load deductions.");
 
@@ -284,7 +475,7 @@ const saveAssistantFieldToMongo = async (action: Extract<AssistantAction, { type
     const oldValue = getNestedValue(current, action.path);
     setNestedValue(current, action.path, action.value);
 
-    const putRes = await fetch("/api/deductions", {
+    const putRes = await apiFetch("/api/deductions", {
       method: "PUT",
       headers,
       body: JSON.stringify({ deductions: current, sourceType: "assistant" }),
@@ -295,7 +486,7 @@ const saveAssistantFieldToMongo = async (action: Extract<AssistantAction, { type
   }
 
   if (action.key === STORAGE_KEYS.ITR_DRAFT) {
-    const getRes = await fetch("/api/itr-draft", { headers });
+    const getRes = await apiFetch("/api/itr-draft", { headers });
     const getData = await getRes.json().catch(() => ({}));
     if (!getRes.ok) throw new Error(getData.message || "Could not load ITR draft.");
 
@@ -306,7 +497,7 @@ const saveAssistantFieldToMongo = async (action: Extract<AssistantAction, { type
     const oldValue = getNestedValue(current, action.path);
     setNestedValue(current, action.path, action.value);
 
-    const putRes = await fetch("/api/itr-draft", {
+    const putRes = await apiFetch("/api/itr-draft", {
       method: "PUT",
       headers,
       body: JSON.stringify({ ...current, sourceType: "assistant" }),
@@ -336,6 +527,7 @@ export default function BeeAssistant({
   const [auditTrail, setAuditTrail] = useState<AuditEntry[]>([]);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
+  const [conversationMode, setConversationMode] = useState<"welcome" | "chat" | "workflow">("welcome");
   const [assistantStatus, setAssistantStatus] = useState<"ready" | "degraded">(
     "ready"
   );
@@ -429,13 +621,11 @@ export default function BeeAssistant({
           taxpayerProfile: null,
           user: safeUserContext(localStorage.getItem(STORAGE_KEYS.USER)),
         };
-        const token = localStorage.getItem("token");
-
-        if (token) {
-          try {
-            const res = await fetch("/api/tax-context", {
-              headers: { Authorization: `Bearer ${token}` },
-            });
+        try {
+          const res = await apiFetch("/api/tax-context");
+          if (res.status === 401) {
+            clearLegacyAuthToken();
+          } else {
             const data = await res.json();
             const taxContext = data.data || data;
             if (res.ok && taxContext) {
@@ -454,9 +644,9 @@ export default function BeeAssistant({
                   .slice(0, MAX_AUDIT_ENTRIES)
               );
             }
-          } catch {
-            // Assistant will stay honest and avoid tax estimates without backend context.
           }
+        } catch {
+          // Assistant will stay honest and avoid tax estimates without backend context.
         }
 
         setStoredContext(localContext);
@@ -881,6 +1071,56 @@ export default function BeeAssistant({
     return suggestions.slice(0, 3);
   }, [checklist, pathname, readinessScore, storedContext.aisImport, storedContext.itrDraft]);
 
+  const userFirstName = useMemo(() => {
+    const user = storedContext.user as { name?: string } | null | undefined;
+    const name = user?.name?.trim();
+    if (!name && typeof window !== "undefined") {
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.USER) || "{}") as { name?: string };
+        return saved.name?.split(/\s+/)[0] || "";
+      } catch {
+        return "";
+      }
+    }
+
+    return name?.split(/\s+/)[0] || "";
+  }, [storedContext.user]);
+
+  const getContextualNextStep = () => {
+    const openItem = checklist.find((item) => !item.done);
+    const extractionReview = (storedContext.extractionReview || []) as ExtractionReviewRecord[];
+    const pendingExtracted = extractionReview.filter((record) => record.status === "extracted").length;
+
+    if (pendingExtracted > 0) {
+      return `You have ${pendingExtracted} extracted field${pendingExtracted === 1 ? "" : "s"} waiting for review. The calm next step is to confirm or correct those values before trusting the draft.`;
+    }
+
+    if (openItem) {
+      return `The next useful step is: ${openItem.label}. We can do that slowly and keep it simple.`;
+    }
+
+    return "Your visible checklist looks well progressed. The next step is a final review of income, deductions, TDS, and regime choice before filing.";
+  };
+
+  const getLocalConversationalReply = (message: string) => {
+    const intent = classifyBeeAssistantIntent(message);
+    if (!isLocalBeeAssistantIntent(intent)) return null;
+
+    const greeting = userFirstName ? `Hey ${userFirstName}.` : "Hey.";
+
+    const replies: Partial<Record<BeeAssistantIntent, string>> = {
+      greeting: `${greeting}\nI am Bee Assistant.\n\nI can help you file taxes, explain deductions, review risks, or simply guide you step by step.`,
+      small_talk: "I am doing great.\nAnd I am ready to help whenever you are.\n\nWhat would you like to work on today?",
+      emotional_support: "I hear you.\nTax filing can feel heavy when there are too many forms, numbers, and rules at once. We can slow it down and handle one small step at a time.",
+      confusion: "That is completely okay. Tax filing can feel confusing at first.\nI will keep the language simple and guide you step by step.\n\nA good first step is to upload or review your Form 16/AIS, then confirm income and deductions.",
+      stress: "I understand. Let us slow things down.\nYou do not need to figure everything out at once, and you do not need to do it alone.\n\nWe can start with one small step: checking what information TaxBee already has.",
+      gratitude: "You are welcome.\nI am glad that helped. We can keep going whenever you are ready.",
+      capabilities: "I can help you like a TaxBee copilot.\n\nI can guide filing steps, explain deductions, compare regimes, review AIS/Form 26AS context, point out missing documents, clarify errors, and suggest what to do next based on your saved TaxBee workspace.\n\nI will not invent financial data or pretend to calculate from documents I cannot see.",
+    };
+
+    return replies[intent] || null;
+  };
+
   const addAssistantMessage = (text: string, guideOfferId?: string, explainability?: Explainability) => {
     const assistantMessage: Message = { sender: "assistant", text, guideOfferId, explainability };
     setMessages((prev) =>
@@ -942,13 +1182,10 @@ export default function BeeAssistant({
 
     if (action.type === "create_reviewer_comment") {
       try {
-        const token = localStorage.getItem("token");
-        if (!token) throw new Error("Missing token");
-        const res = await fetch("/api/collaboration/comments", {
+        const res = await apiFetch("/api/collaboration/comments", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
             fieldKey: action.fieldKey || "",
@@ -1030,6 +1267,7 @@ export default function BeeAssistant({
     GUIDES.find((guide) => guide.id === activeGuideId) ?? null;
 
   const startGuide = (guide: Guide, stepIndex = 0) => {
+    setConversationMode("workflow");
     setActiveGuideId(guide.id);
     navigateToStep(guide, stepIndex);
   };
@@ -1041,6 +1279,7 @@ export default function BeeAssistant({
     setActiveGuideId(guide.id);
     setActiveStepIndex(stepIndex);
     setIsOpen(true);
+    setConversationMode("workflow");
     addAssistantMessage(
       `${step.instruction}\n\n${guide.title}: step ${stepIndex + 1} of ${guide.steps.length} - ${step.label}.`
     );
@@ -1055,8 +1294,45 @@ export default function BeeAssistant({
     addAssistantMessage(guide?.doneMessage || "Guide complete.");
   };
 
-  const handleWorkflowCommand = (userMessage: string) => {
+  const handleWorkflowCommand = (userMessage: string, intent: BeeAssistantIntent) => {
     const normalized = userMessage.toLowerCase();
+
+    const activeGuide = getActiveGuide();
+
+    if (activeStepIndex !== null && activeGuide) {
+      if (
+        normalized.includes("next") ||
+        normalized.includes("done") ||
+        normalized.includes("completed") ||
+        normalized.includes("continue")
+      ) {
+        const nextIndex = activeStepIndex + 1;
+        if (nextIndex >= activeGuide.steps.length) {
+          completeWorkflow();
+        } else {
+          navigateToStep(activeGuide, nextIndex);
+        }
+        return true;
+      }
+
+      if (normalized.includes("back") || normalized.includes("previous")) {
+        navigateToStep(activeGuide, Math.max(activeStepIndex - 1, 0));
+        return true;
+      }
+
+      if (normalized.includes("stop guide") || normalized.includes("cancel guide")) {
+        setActiveStepIndex(null);
+        setActiveGuideId(null);
+        setConversationMode("chat");
+        localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
+        addAssistantMessage("Okay, I stopped the guided filing flow.");
+        return true;
+      }
+    }
+
+    if (!isWorkflowBeeAssistantIntent(intent)) return false;
+
+    setConversationMode("workflow");
 
     if (isTaxHelpOverviewRequest(userMessage)) {
       addAssistantMessage(
@@ -1083,35 +1359,31 @@ export default function BeeAssistant({
       return true;
     }
 
-    const activeGuide = getActiveGuide();
-    if (activeStepIndex === null || !activeGuide) return false;
-
-    if (
-      normalized.includes("next") ||
-      normalized.includes("done") ||
-      normalized.includes("completed") ||
-      normalized.includes("continue")
-    ) {
-      const nextIndex = activeStepIndex + 1;
-      if (nextIndex >= activeGuide.steps.length) {
-        completeWorkflow();
-      } else {
-        navigateToStep(activeGuide, nextIndex);
-      }
+    if (intent === "continue_filing") {
+      addAssistantMessage(`${getContextualNextStep()}\n\nI can keep guiding you from here.`);
       return true;
     }
 
-    if (normalized.includes("back") || normalized.includes("previous")) {
-      navigateToStep(activeGuide, Math.max(activeStepIndex - 1, 0));
+    if (intent === "upload_help") {
+      const guide = GUIDES.find((item) => item.id === "documents");
+      if (guide) startGuide(guide, 0);
       return true;
     }
 
-    if (normalized.includes("stop guide") || normalized.includes("cancel guide")) {
-      setActiveStepIndex(null);
-      setActiveGuideId(null);
-      localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
-      addAssistantMessage("Okay, I stopped the guided filing flow.");
+    if (intent === "filing_help") {
+      const guide = GUIDES.find((item) => item.id === "file-itr");
+      if (guide) startGuide(guide, 0);
       return true;
+    }
+
+    if (intent === "deduction_help") {
+      const guide = GUIDES.find((item) => item.id === "deductions");
+      if (guide) startGuide(guide, 0);
+      return true;
+    }
+
+    if (intent === "workflow_trigger") {
+      return false;
     }
 
     return false;
@@ -1131,7 +1403,20 @@ export default function BeeAssistant({
     setInput("");
     setLastFailedMessage(null);
 
-    if (handleWorkflowCommand(userMessage)) return;
+    const intentRoute = routeBeeAssistantIntent(userMessage);
+    const { intent } = intentRoute;
+
+    const localReply = getLocalConversationalReply(userMessage);
+    if (intentRoute.handling === "local" && localReply) {
+      setConversationMode("chat");
+      setLoading(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 420));
+      addAssistantMessage(localReply);
+      setLoading(false);
+      return;
+    }
+
+    if (intentRoute.handling === "workflow" && handleWorkflowCommand(userMessage, intent)) return;
 
     const groundedReply = /\b(guide|open|go to|take me|next page)\b/i.test(userMessage)
       ? getGroundedCopilotReply(userMessage)
@@ -1141,18 +1426,17 @@ export default function BeeAssistant({
       return;
     }
 
+    setConversationMode(intentRoute.handling === "workflow" ? "workflow" : "chat");
     setLoading(true);
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), ASSISTANT_TIMEOUT_MS);
 
     try {
-      const token = localStorage.getItem("token");
-      const res = await fetch("/api/ai/bee-assistant", {
+      const res = await apiFetch("/api/ai/bee-assistant", {
         method: "POST",
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           message: userMessage,
@@ -1180,6 +1464,15 @@ export default function BeeAssistant({
       }
 
       setAssistantStatus(data.degraded || !res.ok ? "degraded" : "ready");
+      if (res.status === 401) {
+        clearLegacyAuthToken();
+        data = {
+          ...data,
+          reply: "Your TaxBee session has expired. Please log in again, then reopen Bee Assistant.",
+          degraded: true,
+          retryable: false,
+        };
+      }
       if (!res.ok || data.retryable) {
         setLastFailedMessage(userMessage);
       }
@@ -1239,15 +1532,15 @@ export default function BeeAssistant({
     const states = explainability.dataStates;
 
     return (
-      <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-[11px] leading-5 text-slate-300">
+      <div className="mt-3 rounded-2xl border border-indigo-100/80 bg-white/65 p-3 text-[11px] leading-5 text-slate-600 shadow-inner shadow-white/60 backdrop-blur-xl">
         <div className="flex flex-wrap gap-2">
           {typeof explainability.confidence === "number" && (
-            <span className="rounded border border-yellow-400/30 px-2 py-0.5 text-yellow-200">
+            <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 font-semibold text-violet-700">
               Confidence {explainability.confidence}/100
             </span>
           )}
           {states && (
-            <span className="rounded border border-slate-600 px-2 py-0.5">
+            <span className="rounded-full border border-cyan-100 bg-cyan-50 px-2 py-0.5 text-cyan-800">
               {states.confirmed || 0} confirmed · {states.extracted || 0} extracted · {states.overridden || 0} overridden
             </span>
           )}
@@ -1256,8 +1549,8 @@ export default function BeeAssistant({
         {sourceFields.length > 0 && <div>Fields: {sourceFields.slice(0, 4).join(", ")}</div>}
         {sourceDocuments.length > 0 && <div>Sources: {sourceDocuments.slice(0, 3).join(", ")}</div>}
         {basis.length > 0 && <div>Basis: {basis.slice(0, 2).join(" ")}</div>}
-        {missingData.length > 0 && <div className="text-amber-200">Missing: {missingData.slice(0, 4).join(", ")}</div>}
-        {warnings.length > 0 && <div className="text-red-200">Warnings: {warnings.slice(0, 3).join(" ")}</div>}
+        {missingData.length > 0 && <div className="text-amber-700">Missing: {missingData.slice(0, 4).join(", ")}</div>}
+        {warnings.length > 0 && <div className="text-rose-700">Warnings: {warnings.slice(0, 3).join(" ")}</div>}
         {auditRefs.length > 0 && <div>Audit refs: {auditRefs.slice(0, 3).join(", ")}</div>}
       </div>
     );
@@ -1267,6 +1560,7 @@ export default function BeeAssistant({
     setMessages(INITIAL_MESSAGES);
     setActiveGuideId(null);
     setActiveStepIndex(null);
+    setConversationMode("welcome");
     localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
     localStorage.removeItem(STORAGE_KEYS.MEMORY);
     localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
@@ -1303,17 +1597,18 @@ export default function BeeAssistant({
     },
   ];
 
-  const startableGuides = GUIDES.filter((guide) =>
-    ["file-itr", "deductions", "documents", "tax-savings", "dashboard", "help"].includes(
-      guide.id
-    )
-  );
-
   const activeGuide = getActiveGuide();
   const activeStep =
     activeStepIndex === null || !activeGuide
       ? null
       : activeGuide.steps[activeStepIndex];
+  const hasUserMessages = messages.some((message) => message.sender === "user");
+  const hasActiveAssistantWork =
+    Boolean(activeStep) ||
+    hasUserMessages ||
+    pendingActions.length > 0 ||
+    Boolean(lastFailedMessage) ||
+    loading;
   const dismissGuideOffer = (messageIndex: number) => {
     setMessages((prev) =>
       prev.map((message, index) =>
@@ -1323,26 +1618,27 @@ export default function BeeAssistant({
   };
 
   const renderGuideOffer = (guide: Guide, messageIndex: number) => (
-    <div className="mt-3 rounded-xl border border-yellow-400/30 bg-yellow-400/10 p-3">
-      <div className="text-xs font-semibold text-yellow-300">
+    <div className="mt-3 rounded-2xl border border-violet-100 bg-white/70 p-3 shadow-sm shadow-violet-100/70 backdrop-blur-xl">
+      <div className="flex items-center gap-2 text-xs font-semibold text-violet-700">
+        <WandSparkles className="h-3.5 w-3.5" />
         Guided help available
       </div>
-      <div className="mt-1 font-bold text-white">{guide.title}</div>
-      <p className="mt-1 text-xs leading-5 text-gray-300">
+      <div className="mt-1 font-bold text-slate-950">{guide.title}</div>
+      <p className="mt-1 text-xs leading-5 text-slate-600">
         I can open each page and explain what to do there.
       </p>
       <div className="mt-3 flex gap-2">
         <button
           type="button"
           onClick={() => startGuide(guide, 0)}
-          className="rounded bg-yellow-400 px-3 py-1.5 text-xs font-semibold text-black"
+          className="rounded-full bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 px-3 py-1.5 text-xs font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:scale-[1.03]"
         >
           Guide me
         </button>
         <button
           type="button"
           onClick={() => dismissGuideOffer(messageIndex)}
-          className="rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-200"
+          className="rounded-full border border-slate-200 bg-white/70 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
         >
           Not now
         </button>
@@ -1352,305 +1648,321 @@ export default function BeeAssistant({
 
   return (
     <>
-      <button
+      <motion.button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="fixed bottom-6 right-6 z-40 rounded-full bg-yellow-400 px-6 py-4 font-bold text-black shadow-2xl hover:scale-110 hover:bg-yellow-300 transition-all duration-300 active:scale-95 flex items-center gap-2"
+        whileHover={{ scale: 1.04, y: -2 }}
+        whileTap={{ scale: 0.96 }}
+        className="fixed bottom-5 right-5 z-40 flex items-center gap-3 rounded-full border border-white/50 bg-white/70 px-4 py-3 text-sm font-semibold text-slate-950 shadow-[0_18px_60px_rgba(79,70,229,0.22)] backdrop-blur-2xl transition focus:outline-none focus:ring-2 focus:ring-violet-400 sm:bottom-6 sm:right-6"
+        aria-expanded={isOpen}
+        aria-label="Open Bee Assistant"
       >
-        <span className="text-xl">🐝</span>
-        <span>Bee Assistant</span>
-      </button>
+        <span className="relative flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-violet-600 via-indigo-600 to-cyan-500 text-white shadow-lg shadow-indigo-500/30">
+          <Bot className="h-5 w-5" />
+          <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-400" />
+        </span>
+        <span className="hidden sm:block">Bee Assistant</span>
+        <Sparkles className="hidden h-4 w-4 text-violet-500 sm:block" />
+      </motion.button>
 
-      {isOpen && (
-        <div className="fixed bottom-24 right-6 z-40 flex h-[620px] w-[400px] flex-col rounded-3xl border border-white/10 bg-slate-900/95 backdrop-blur-xl text-white shadow-2xl ring-1 ring-white/20 animate-in fade-in slide-in-from-bottom-4 duration-300">
-          <div className="flex items-center justify-between rounded-t-3xl bg-gradient-to-r from-yellow-400 to-amber-500 px-5 py-4 text-black shadow-md">
-            <div>
-              <span className="font-extrabold text-lg tracking-tight">Bee Assistant</span>
-              <div className="text-[10px] font-bold uppercase tracking-widest opacity-80">
-                {assistantStatus === "ready" ? "Ready" : "Degraded mode"}
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={toggleMemory}
-                className="text-xs font-semibold hover:underline"
-                title="Turn saved assistant memory on or off"
-              >
-                Memory {memoryEnabled ? "On" : "Off"}
-              </button>
-              <button
-                type="button"
-                onClick={clearChat}
-                className="text-xs font-semibold hover:underline"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-
-          {activeStep && (
-            <div className="border-b border-white/5 bg-black/40 px-5 py-4 text-xs">
-              <div className="mb-2 flex items-center justify-between text-yellow-300">
-                <span className="font-bold uppercase tracking-tighter opacity-70">
-                  {activeGuide?.title}: Step {activeStepIndex! + 1} of{" "}
-                  {activeGuide?.steps.length}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveStepIndex(null);
-                    setActiveGuideId(null);
-                    localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
-                  }}
-                  className="text-gray-300 hover:text-white"
-                >
-                  Stop
-                </button>
-              </div>
-              <div className="font-bold text-sm text-white">{activeStep.label}</div>
-              <div className="mt-1 text-gray-400">{activeStep.instruction}</div>
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() =>
-                    activeGuide &&
-                    navigateToStep(activeGuide, Math.max(activeStepIndex! - 1, 0))
-                  }
-                  className="rounded border border-gray-700 px-2 py-1 text-gray-200 disabled:opacity-40"
-                  disabled={activeStepIndex === 0}
-                >
-                  Back
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextIndex = activeStepIndex! + 1;
-                    if (!activeGuide || nextIndex >= activeGuide.steps.length) {
-                      completeWorkflow();
-                    } else {
-                      navigateToStep(activeGuide, nextIndex);
-                    }
-                  }}
-                  className="rounded bg-yellow-400 px-2 py-1 font-semibold text-black"
-                >
-                  {activeGuide && activeStepIndex === activeGuide.steps.length - 1
-                    ? "Finish"
-                    : "Next"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="flex-1 space-y-4 overflow-y-auto p-5 scrollbar-thin scrollbar-thumb-white/10">
-            {!activeStep && (
-              <div className="rounded-2xl border border-white/5 bg-white/5 p-4">
-                <div className="mb-2 text-xs font-semibold text-yellow-300">
-                  What do you want to do?
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {startableGuides.map((guide) => (
-                    <button
-                      key={guide.id}
-                      type="button"
-                      onClick={() => startGuide(guide, 0)}
-                      className="rounded-lg border border-gray-700 px-2 py-2 text-left text-xs text-gray-100 hover:border-yellow-400 hover:text-yellow-300"
-                    >
-                      {guide.title}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="rounded-2xl border border-white/5 bg-black/30 p-4">
-              <div className="mb-2 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-yellow-400/80">
-                <span>Filing checklist</span>
-                <span>{readinessScore}% ready</span>
-              </div>
-              <div className="mb-3 h-2 overflow-hidden rounded-full bg-gray-800">
-                <div
-                  className="h-full rounded-full bg-yellow-400 transition-all"
-                  style={{ width: `${readinessScore}%` }}
-                />
-              </div>
-              <div className="space-y-1">
-                {checklist.map((item) => (
-                  <div
-                    key={item.label}
-                    className="flex items-center gap-2 text-xs text-gray-300"
-                  >
-                    <span className={item.done ? "text-green-400" : "text-gray-600"}>
-                      {item.done ? "[x]" : "[ ]"}
-                    </span>
-                    <span>{item.label}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {smartSuggestions.length > 0 && (
-              <div className="rounded-2xl border border-yellow-400/10 bg-yellow-400/5 p-4">
-                <div className="mb-2 text-xs font-semibold text-yellow-300">
-                  Next best actions
-                </div>
-                <div className="space-y-2">
-                  {smartSuggestions.map((suggestion, index) => (
-                    <button
-                      key={`${suggestion.kind}-${suggestion.value}-${suggestion.label}-${index}`}
-                      type="button"
-                      onClick={() => runSmartSuggestion(suggestion)}
-                      disabled={loading}
-                      className="w-full rounded-lg border border-gray-700 px-3 py-2 text-left text-xs text-gray-100 transition hover:border-yellow-400 hover:bg-black disabled:opacity-60"
-                    >
-                      <span className="block font-semibold text-white">
-                        {suggestion.label}
-                      </span>
-                      <span className="mt-1 block text-gray-400">
-                        {suggestion.detail}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {auditTrail.length > 0 && (
-              <div className="rounded-2xl border border-white/5 bg-black/20 p-4">
-                <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                  Recent assistant changes
-                </div>
-                <div className="space-y-2">
-                  {auditTrail.slice(0, 2).map((entry) => (
-                    <div key={entry.id} className="text-xs text-gray-300">
-                      <div className="font-semibold text-gray-100">{entry.label || entry.eventType || "Audit event"}</div>
-                      <div className="text-gray-500">
-                        {entry.path || entry.fieldKey || "document"}: {String(entry.oldValue ?? "empty")} {"->"}{" "}
-                        {String(entry.newValue ?? "empty")}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {pendingActions.length > 0 && (
-              <div className="rounded-2xl border border-yellow-400/40 bg-yellow-400/10 p-4 shadow-xl">
-                <div className="mb-2 text-xs font-semibold text-yellow-300">
-                  Confirm update
-                </div>
-                <div className="space-y-1 text-xs text-gray-100">
-                  {pendingActions.map((action, index) => (
-                    <div key={`${action.type}-${index}`}>
-                      {action.type === "set_local_storage"
-                        ? action.label || "Update draft field"
-                        : action.label || "Assistant action"}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={applyPendingActions}
-                    className="rounded bg-yellow-400 px-3 py-1 text-xs font-semibold text-black"
-                  >
-                    Apply
-                  </button>
-                  <button
-                    type="button"
-                    onClick={cancelPendingActions}
-                    className="rounded border border-gray-700 px-3 py-1 text-xs text-gray-200"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {lastFailedMessage && (
-              <div className="rounded-xl border border-red-400/40 bg-red-950/40 p-3">
-                <div className="text-xs font-semibold text-red-200">
-                  Last request did not complete
-                </div>
-                <div className="mt-1 line-clamp-2 text-xs text-red-100">
-                  {lastFailedMessage}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void sendMessage(lastFailedMessage)}
-                  disabled={loading}
-                  className="mt-3 rounded bg-red-200 px-3 py-1 text-xs font-semibold text-red-950 disabled:opacity-60"
-                >
-                  Retry
-                </button>
-              </div>
-            )}
-
-            {messages.map((msg, index) => {
-              const messageGuide = msg.guideOfferId
-                ? GUIDES.find((guide) => guide.id === msg.guideOfferId) ?? null
-                : null;
-
-              return (
-                <div
-                  key={`${msg.sender}-${index}`}
-                  className={`max-w-[85%] px-4 py-3 text-sm shadow-md transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 ${
-                    msg.sender === "user"
-                      ? "ml-auto bg-yellow-400 text-black rounded-2xl rounded-tr-none font-medium"
-                      : "bg-white/10 text-slate-100 rounded-2xl rounded-tl-none border border-white/5"
-                  }`}
-                >
-                  {renderMessageText(msg.text)}
-                  {msg.sender === "assistant" ? renderExplainability(msg.explainability) : null}
-                  {messageGuide ? renderGuideOffer(messageGuide, index) : null}
-                </div>
-              );
-            })}
-
-            {loading && (
-              <div className="flex gap-1 items-center px-4 py-3 bg-white/5 rounded-2xl rounded-tl-none w-fit">
-                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-
-          <div className="flex gap-2 overflow-x-auto border-t border-gray-800 px-3 py-2">
-            {quickPrompts.map((prompt) => (
-              <button
-                key={prompt.label}
-                type="button"
-                onClick={() => void sendMessage(prompt.text)}
-                disabled={loading}
-                className="shrink-0 rounded-full border border-yellow-400/50 px-3 py-1 text-xs text-yellow-300 hover:bg-yellow-400 hover:text-black disabled:opacity-60"
-              >
-                {prompt.label}
-              </button>
-            ))}
-          </div>
-
-          <form
-            onSubmit={handleSubmit}
-            className="flex gap-2 border-t border-gray-700 p-3"
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: 34, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 24, scale: 0.96 }}
+            transition={panelSpring}
+            className="fixed inset-x-3 bottom-3 z-40 flex h-[86dvh] flex-col overflow-hidden rounded-[2rem] border border-white/45 bg-white/45 text-slate-900 shadow-[0_24px_90px_rgba(15,23,42,0.18)] ring-1 ring-indigo-100/60 backdrop-blur-2xl sm:inset-auto sm:bottom-24 sm:right-6 sm:h-[min(760px,calc(100vh-7rem))] sm:w-[440px]"
+            role="dialog"
+            aria-label="Bee Assistant AI copilot"
           >
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about tax..."
-              className="min-w-0 flex-1 rounded-lg bg-gray-900 px-3 py-2 text-white outline-none"
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              className="rounded-lg bg-yellow-400 px-4 py-2 font-semibold text-black disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Send
-            </button>
-          </form>
-        </div>
-      )}
+            <div className="relative h-[162px] shrink-0 overflow-visible">
+              <ShaderAnimation status={assistantStatus} />
+              <div className="absolute inset-0 flex flex-col justify-between p-5 text-white">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase text-white/80">
+                      <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_18px_rgba(110,231,183,0.95)]" />
+                      {assistantStatus === "ready" ? "Ready" : "Degraded mode"}
+                    </div>
+                    <h2 className="mt-2 text-2xl font-bold text-white drop-shadow-sm">
+                      Bee Assistant
+                    </h2>
+                    <p className="mt-1 max-w-[270px] text-xs leading-5 text-white/82">
+                      AI tax copilot with grounded review, filing guidance, and memory.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={toggleMemory}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-white/35 bg-white/18 px-3 py-1.5 text-xs font-semibold text-white shadow-sm backdrop-blur-xl transition hover:bg-white/28 focus:outline-none focus:ring-2 focus:ring-white/70"
+                      title="Turn saved assistant memory on or off"
+                    >
+                      <Brain className="h-3.5 w-3.5" />
+                      {memoryEnabled ? "Memory" : "Off"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearChat}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/35 bg-white/18 text-white shadow-sm backdrop-blur-xl transition hover:bg-white/28 focus:outline-none focus:ring-2 focus:ring-white/70"
+                      aria-label="Clear chat"
+                      title="Clear chat"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsOpen(false)}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/35 bg-white/18 text-white shadow-sm backdrop-blur-xl transition hover:bg-white/28 focus:outline-none focus:ring-2 focus:ring-white/70"
+                      aria-label="Close Bee Assistant"
+                      title="Close"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <motion.div
+                animate={{ y: [0, -3, 0], scale: [1, 1.025, 1] }}
+                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+                className="absolute -bottom-8 left-5 flex h-16 w-16 items-center justify-center rounded-3xl border border-white/70 bg-white/72 shadow-[0_16px_50px_rgba(79,70,229,0.26)] backdrop-blur-2xl"
+              >
+                <div className="absolute inset-1 rounded-[1.35rem] bg-gradient-to-br from-violet-500/14 via-indigo-500/10 to-cyan-400/20" />
+                <Bot className="relative h-8 w-8 text-violet-700" />
+              </motion.div>
+            </div>
+
+            {hasActiveAssistantWork ? (
+              <>
+                {activeStep && (
+                  <div className="mx-4 mt-10 rounded-3xl border border-indigo-100 bg-white/68 p-4 text-xs shadow-sm shadow-indigo-100/60 backdrop-blur-xl sm:mx-5">
+                    <div className="mb-2 flex items-center justify-between gap-3 text-violet-700">
+                      <span className="font-bold uppercase">
+                        {activeGuide?.title}: Step {activeStepIndex! + 1} of {activeGuide?.steps.length}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveStepIndex(null);
+                          setActiveGuideId(null);
+                          localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
+                        }}
+                        className="rounded-full px-2 py-1 font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                      >
+                        Stop
+                      </button>
+                    </div>
+                    <div className="text-sm font-bold text-slate-950">{activeStep.label}</div>
+                    <div className="mt-1 leading-5 text-slate-600">{activeStep.instruction}</div>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => activeGuide && navigateToStep(activeGuide, Math.max(activeStepIndex! - 1, 0))}
+                        className="rounded-full border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-600 shadow-sm disabled:opacity-40"
+                        disabled={activeStepIndex === 0}
+                      >
+                        Back
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextIndex = activeStepIndex! + 1;
+                          if (!activeGuide || nextIndex >= activeGuide.steps.length) {
+                            completeWorkflow();
+                          } else {
+                            navigateToStep(activeGuide, nextIndex);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 px-3 py-1.5 font-semibold text-white shadow-lg shadow-indigo-500/20"
+                      >
+                        {activeGuide && activeStepIndex === activeGuide.steps.length - 1 ? "Finish" : "Next"}
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className={`flex-1 space-y-4 overflow-y-auto px-4 pb-4 pt-10 sm:px-5 ${activeStep ? "pt-4" : ""}`}>
+                  {pendingActions.length > 0 && (
+                    <section className="rounded-3xl border border-violet-200 bg-violet-50/80 p-4 shadow-lg shadow-violet-200/30 backdrop-blur-xl">
+                      <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase text-violet-700">
+                        <ShieldCheck className="h-4 w-4" />
+                        Confirm update
+                      </div>
+                      <div className="space-y-1 text-xs text-slate-700">
+                        {pendingActions.map((action, index) => (
+                          <div key={`${action.type}-${index}`}>
+                            {action.type === "set_local_storage" ? action.label || "Update draft field" : action.label || "Assistant action"}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 flex gap-2">
+                        <button type="button" onClick={applyPendingActions} className="rounded-full bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 px-4 py-1.5 text-xs font-semibold text-white shadow-lg shadow-indigo-500/20">
+                          Apply
+                        </button>
+                        <button type="button" onClick={cancelPendingActions} className="rounded-full border border-slate-200 bg-white px-4 py-1.5 text-xs font-semibold text-slate-600">
+                          Cancel
+                        </button>
+                      </div>
+                    </section>
+                  )}
+
+                  {lastFailedMessage && (
+                    <section className="rounded-3xl border border-rose-200 bg-rose-50/85 p-4 shadow-sm backdrop-blur-xl">
+                      <div className="text-xs font-semibold text-rose-800">Last request did not complete</div>
+                      <div className="mt-1 line-clamp-2 text-xs text-rose-700">{lastFailedMessage}</div>
+                      <button type="button" onClick={() => void sendMessage(lastFailedMessage)} disabled={loading} className="mt-3 rounded-full bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60">
+                        Retry
+                      </button>
+                    </section>
+                  )}
+
+                  {smartSuggestions.length > 0 && conversationMode === "workflow" && (
+                    <section className="rounded-3xl border border-violet-100 bg-white/62 p-4 shadow-sm shadow-violet-100/60 backdrop-blur-xl">
+                      <div className="mb-3 flex items-center gap-2 text-xs font-bold uppercase text-violet-700">
+                        <WandSparkles className="h-4 w-4" />
+                        Next best actions
+                      </div>
+                      <div className="space-y-2">
+                        {smartSuggestions.map((suggestion, index) => (
+                          <motion.button
+                            key={`${suggestion.kind}-${suggestion.value}-${suggestion.label}-${index}`}
+                            type="button"
+                            onClick={() => runSmartSuggestion(suggestion)}
+                            disabled={loading}
+                            whileHover={{ x: 2 }}
+                            className="group relative w-full overflow-hidden rounded-2xl border border-indigo-100 bg-white/72 px-3 py-3 text-left text-xs text-slate-700 shadow-sm transition disabled:opacity-60"
+                          >
+                            <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/70 to-transparent opacity-0 transition duration-700 group-hover:translate-x-full group-hover:opacity-100" />
+                            <span className="relative flex items-start justify-between gap-3">
+                              <span>
+                                <span className="block font-semibold text-slate-950">{suggestion.label}</span>
+                                <span className="mt-1 block leading-5 text-slate-500">{suggestion.detail}</span>
+                              </span>
+                              <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" />
+                            </span>
+                          </motion.button>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {messages.map((msg, index) => {
+                    const messageGuide = msg.guideOfferId ? GUIDES.find((guide) => guide.id === msg.guideOfferId) ?? null : null;
+
+                    return (
+                      <motion.div
+                        key={`${msg.sender}-${index}`}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.22 }}
+                        className={`max-w-[88%] px-4 py-3 text-sm leading-6 shadow-sm ${msg.sender === "user" ? "ml-auto rounded-3xl rounded-br-lg bg-gradient-to-br from-violet-600 via-indigo-600 to-cyan-500 font-medium text-white shadow-indigo-500/20" : "rounded-3xl rounded-bl-lg border border-white/70 bg-white/72 text-slate-700 shadow-slate-200/70 backdrop-blur-xl"}`}
+                      >
+                        {renderMessageText(msg.text)}
+                        {msg.sender === "assistant" ? renderExplainability(msg.explainability) : null}
+                        {messageGuide ? renderGuideOffer(messageGuide, index) : null}
+                      </motion.div>
+                    );
+                  })}
+
+                  {loading && (
+                    <div className="flex w-fit items-center gap-1 rounded-3xl rounded-bl-lg border border-white/70 bg-white/72 px-4 py-3 shadow-sm backdrop-blur-xl">
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-violet-500 [animation-delay:-0.3s]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500 [animation-delay:-0.15s]" />
+                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-cyan-500" />
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+              </>
+            ) : (
+              <div className="relative flex flex-1 items-center justify-center overflow-hidden px-5 py-10">
+                <div className="absolute left-8 top-10 h-28 w-28 rounded-full bg-cyan-300/25 blur-3xl" />
+                <div className="absolute bottom-12 right-8 h-32 w-32 rounded-full bg-violet-400/20 blur-3xl" />
+                <motion.div
+                  initial={{ opacity: 0, y: 18, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{ duration: 0.55, ease: "easeOut" }}
+                  className="relative w-full max-w-[350px] rounded-3xl border border-white/70 bg-white/68 px-6 py-8 text-center shadow-[0_24px_70px_rgba(79,70,229,0.16)] backdrop-blur-2xl"
+                >
+                  <motion.div
+                    animate={{ y: [0, -5, 0], scale: [1, 1.04, 1] }}
+                    transition={{ duration: 3.8, repeat: Infinity, ease: "easeInOut" }}
+                    className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-[1.75rem] border border-white/80 bg-white/75 shadow-[0_18px_55px_rgba(6,182,212,0.24)]"
+                  >
+                    <span className="absolute h-24 w-24 rounded-full bg-gradient-to-br from-violet-400/20 to-cyan-300/25 blur-xl" />
+                    <Bot className="relative h-10 w-10 text-violet-700" />
+                  </motion.div>
+                  <h3 className="text-2xl font-bold text-slate-950">
+                    Hi, I&apos;m <span className="bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 bg-clip-text text-transparent">Bee Assistant</span>.
+                  </h3>
+                  <p className="mx-auto mt-3 max-w-[280px] text-sm leading-6 text-slate-500">
+                    I can guide you through filing your ITR step by step.
+                  </p>
+                  <div className="mt-7 grid gap-2 sm:grid-cols-2">
+                    {welcomePrompts.map((prompt, index) => (
+                      <motion.button
+                        key={prompt.label}
+                        type="button"
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.08 * index, duration: 0.32 }}
+                        whileHover={{ y: -2, scale: 1.02 }}
+                        whileTap={{ scale: 0.97 }}
+                        onClick={() => {
+                          if (prompt.action === "guide") {
+                            const guide = GUIDES.find((item) => item.id === prompt.value);
+                            if (guide) startGuide(guide, 0);
+                            return;
+                          }
+
+                          void sendMessage(prompt.value);
+                        }}
+                        className="rounded-full bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 px-4 py-2.5 text-xs font-semibold text-white shadow-lg shadow-indigo-500/20 transition"
+                      >
+                        {prompt.label}
+                      </motion.button>
+                    ))}
+                  </div>
+                </motion.div>
+              </div>
+            )}
+            {hasActiveAssistantWork && (
+              <div className="border-t border-white/50 bg-white/42 px-4 py-3 backdrop-blur-2xl sm:px-5">
+                <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+                  {quickPrompts.map((prompt) => {
+                    const PromptIcon = quickPromptIconMap[prompt.label] || Sparkles;
+                    return (
+                      <button key={prompt.label} type="button" onClick={() => void sendMessage(prompt.text)} disabled={loading} className="group relative shrink-0 overflow-hidden rounded-full border border-indigo-100 bg-white/72 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-violet-200 hover:text-violet-700 disabled:opacity-60">
+                        <span className="absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-violet-100/80 to-transparent opacity-0 transition duration-700 group-hover:translate-x-full group-hover:opacity-100" />
+                        <span className="relative flex items-center gap-1.5">
+                          <PromptIcon className="h-3.5 w-3.5" />
+                          {prompt.label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <form onSubmit={handleSubmit} className="flex items-center gap-2 rounded-full border border-white/70 bg-white/75 p-1.5 shadow-[0_12px_40px_rgba(79,70,229,0.13)] backdrop-blur-xl focus-within:ring-2 focus-within:ring-violet-300/80">
+                  <input
+                    type="text"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    placeholder="Ask Bee about deductions, risks, regimes..."
+                    className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400"
+                    aria-label="Ask Bee Assistant"
+                  />
+                  <motion.button type="submit" disabled={loading} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-600 via-indigo-600 to-cyan-500 text-white shadow-lg shadow-indigo-500/25 transition disabled:cursor-not-allowed disabled:opacity-60" aria-label="Send message">
+                    <Send className="h-4 w-4" />
+                  </motion.button>
+                </form>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }

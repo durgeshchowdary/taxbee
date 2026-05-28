@@ -141,3 +141,17 @@ test("requireAuth rejects missing authentication with structured diagnostics", (
     service: "auth",
   });
 });
+
+test("requireAuth treats malformed auth_token cookies as missing authentication", () => {
+  const req = {
+    requestId: "req-auth-bad-cookie",
+    originalUrl: "/api/ai/bee-assistant",
+    get: (name) => (name.toLowerCase() === "cookie" ? "auth_token=%E0%A4%A" : ""),
+  };
+  const res = mockResponse();
+
+  requireAuth(req, res, () => {});
+
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.body.code, "AUTH_REQUIRED");
+});

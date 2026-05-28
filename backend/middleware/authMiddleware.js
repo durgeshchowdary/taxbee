@@ -25,13 +25,18 @@ const attachUser = (req, payload) => {
 const cookieToken = (req) => {
   const cookie = req.get("cookie") || "";
   const match = cookie.match(/(?:^|;\s*)auth_token=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : "";
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
 };
 
 const requestToken = (req) => {
   const header = req.get("authorization") || "";
   const [, bearer] = header.match(/^Bearer\s+(.+)$/i) || [];
-  return bearer || cookieToken(req);
+  return (bearer || cookieToken(req)).trim();
 };
 
 export const requireAuth = (req, res, next) => {

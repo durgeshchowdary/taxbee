@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authCookieOptions, BACKEND_URL, readBackendJson } from "@/app/api/_utils/backend";
+import { authCookieOptions, BACKEND_URL, clearAuthCookieOptions, readBackendJson } from "@/app/api/_utils/backend";
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,6 +18,8 @@ export async function POST(req: NextRequest) {
 
     if (res.ok && typeof token === "string") {
       response.cookies.set("auth_token", token, authCookieOptions);
+    } else if (!res.ok) {
+      response.cookies.set("auth_token", "", clearAuthCookieOptions);
     }
 
     return response;

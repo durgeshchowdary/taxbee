@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authForwardHeaders, BACKEND_URL, readBackendJson } from "@/app/api/_utils/backend";
+import { authForwardHeaders, BACKEND_URL, clearAuthCookieOptions, readBackendJson, shouldClearAuthCookie } from "@/app/api/_utils/backend";
 
 export async function GET(req: NextRequest) {
   try {
@@ -7,7 +7,12 @@ export async function GET(req: NextRequest) {
       headers: authForwardHeaders(req),
     });
 
-    return NextResponse.json(await readBackendJson(res), { status: res.status });
+    const data = await readBackendJson(res);
+    const response = NextResponse.json(data, { status: res.status });
+    if (shouldClearAuthCookie(res.status, data)) {
+      response.cookies.set("auth_token", "", clearAuthCookieOptions);
+    }
+    return response;
   } catch (error) {
     console.error("Session proxy error:", error);
     return NextResponse.json(
