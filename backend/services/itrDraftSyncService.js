@@ -29,6 +29,23 @@ export const syncReviewedFieldsToITRDraft = async ({ userKey, importedDocument }
   const updates = {};
   const reviewedFields = [];
 
+  const FIELD_MAP = {
+  "salary.salary17_1": "salary.salary17_1",
+  "salary.grossSalary": "salary.salary17_1",
+  "salary.standardDeduction": "salary.standardDeduction",
+  "salary.professionalTax": "salary.professionalTaxDeduction",
+
+  "deductions.section80C": "deductions.section80C",
+  "deductions.80C": "deductions.section80C",
+
+  "deductions.healthInsurance80D": "deductions.healthInsurance80D",
+  "deductions.section80D": "deductions.healthInsurance80D",
+  "deductions.80D": "deductions.healthInsurance80D",
+
+  "otherSources.savingsInterest": "otherSources.savingsInterest",
+  "otherSources.fdInterest": "otherSources.fdInterest",
+};
+
   for (const field of importedDocument.extractedFields || []) {
     if (!["confirmed", "overridden"].includes(field.status)) continue;
 
