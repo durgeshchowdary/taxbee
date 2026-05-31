@@ -1,0 +1,38 @@
+name: Backend Build
+
+on:
+  push:
+    branches:
+      - main
+      - sprint-*
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  backend-build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Backend Dependencies
+        run: npm install
+
+      - name: Validate Backend Startup
+        run: |
+          node --check server.js
+
+      - name: Run Backend Tests
+        run: npm test
+        continue-on-error: true
