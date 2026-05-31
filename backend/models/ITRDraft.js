@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const ITRDraftSchema = new mongoose.Schema(
   {
-    userKey: { type: String, required: true, unique: true },
+    userKey: { type: String, required: true },
 
     salary: {
       salary17_1: { type: String, default: '' },
