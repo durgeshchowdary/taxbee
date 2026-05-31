@@ -9,6 +9,7 @@ import { getJwtAudience, getJwtIssuer } from '../utils/env.js';
 import { createNotification } from '../services/notificationService.js';
 import WorkspaceAccess from '../models/WorkspaceAccess.js';
 import { isUserEmailVerified, markUserEmailVerified, verificationStateFor } from '../utils/emailVerification.js';
+import { recordAuthAuditEvent, recordAuthFailureAudit } from '../services/authAuditService.js';
 
 const createOtp = () => crypto.randomInt(100000, 1000000).toString();
 
@@ -153,11 +154,28 @@ export const signup = async (req, res) => {
 
     if (existingUser) {
       logger.warn('auth_failure', { requestId: req.requestId, reason: 'signup_existing_user' });
+      await recordAuthFailureAudit({
+        userId: String(existingUser._id),
+        eventType: 'auth_signup_failed',
+        reason: 'signup_existing_user',
+        requestId: req.requestId,
+        metadata: { emailDomain: normalizedEmail.split('@')[1] || '' },
+      });
       return fail(res, { status: 400, message: 'User already exists. Please login.' });
     }
 
     const user = await User.create({ name, email: normalizedEmail, password, role: 'taxpayer', isVerified: false });
     const otpDelivery = await sendVerificationOtp(user, { requestId: req.requestId });
+    await recordAuthAuditEvent({
+      userId: String(user._id),
+      eventType: 'auth_signup',
+      requestId: req.requestId,
+      metadata: {
+        emailDomain: normalizedEmail.split('@')[1] || '',
+        requiresVerification: true,
+        emailSent: otpDelivery.emailSent,
+      },
+    });
 
     res.status(201).json({
       success: true,
@@ -198,15 +216,32 @@ export const verifyOtp = async (req, res) => {
 
     if (!user) {
       logger.warn('auth_failure', { requestId: req.requestId, reason: 'otp_user_not_found' });
+      await recordAuthFailureAudit({
+        reason: 'otp_user_not_found',
+        eventType: 'auth_verification_failed',
+        requestId: req.requestId,
+      });
       return fail(res, { status: 400, message: 'Invalid verification request' });
     }
     if (isUserEmailVerified(user)) return fail(res, { status: 400, message: 'First login is already verified' });
     if (!user.otpHash || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
       logger.warn('auth_failure', { requestId: req.requestId, reason: 'otp_expired', userId: String(user._id) });
+      await recordAuthFailureAudit({
+        userId: String(user._id),
+        eventType: 'auth_verification_failed',
+        reason: 'otp_expired',
+        requestId: req.requestId,
+      });
       return fail(res, { status: 400, message: 'OTP expired. Please login again to get a new OTP.' });
     }
     if (user.otpHash !== hashOtp(otp)) {
       logger.warn('auth_failure', { requestId: req.requestId, reason: 'otp_invalid', userId: String(user._id) });
+      await recordAuthFailureAudit({
+        userId: String(user._id),
+        eventType: 'auth_verification_failed',
+        reason: 'otp_invalid',
+        requestId: req.requestId,
+      });
       return fail(res, { status: 400, message: 'Invalid OTP' });
     }
 
@@ -217,6 +252,11 @@ export const verifyOtp = async (req, res) => {
 
     const token = createToken(user);
     const session = await buildSessionPayload(user);
+    await recordAuthAuditEvent({
+      userId: String(user._id),
+      eventType: 'auth_email_verified',
+      requestId: req.requestId,
+    });
 
     res.status(200).json({
       success: true,
@@ -246,12 +286,25 @@ export const login = async (req, res) => {
     const user = await User.findOne({ email: email?.toLowerCase().trim() });
     if (!user) {
       logger.warn('auth_failure', { requestId: req.requestId, reason: 'invalid_credentials' });
+      await recordAuthFailureAudit({
+        reason: 'invalid_credentials',
+        eventType: 'auth_login_failed',
+        requestId: req.requestId,
+        metadata: { userFound: false },
+      });
       return fail(res, { status: 400, message: 'Invalid credentials' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       logger.warn('auth_failure', { requestId: req.requestId, reason: 'invalid_credentials', userId: String(user._id) });
+      await recordAuthFailureAudit({
+        userId: String(user._id),
+        eventType: 'auth_login_failed',
+        reason: 'invalid_credentials',
+        requestId: req.requestId,
+        metadata: { userFound: true },
+      });
       await createNotification({
         userId: String(user._id),
         recipientEmail: user.email,
@@ -289,6 +342,11 @@ export const login = async (req, res) => {
 
     const token = createToken(user);
     const session = await buildSessionPayload(user);
+    await recordAuthAuditEvent({
+      userId: String(user._id),
+      eventType: 'auth_login_success',
+      requestId: req.requestId,
+    });
 
     res.status(200).json({
       success: true,
@@ -325,6 +383,12 @@ export const resendVerificationOtp = async (req, res) => {
     }
 
     const otpDelivery = await sendVerificationOtp(user, { requestId: req.requestId });
+    await recordAuthAuditEvent({
+      userId: String(user._id),
+      eventType: 'auth_verification_resent',
+      requestId: req.requestId,
+      metadata: { emailSent: otpDelivery.emailSent },
+    });
 
     return res.status(200).json({
       success: true,
@@ -358,6 +422,12 @@ export const session = async (req, res) => {
       return fail(res, { status: 401, message: 'Invalid or expired authentication token', code: 'AUTH_INVALID' });
     }
 
+    await recordAuthAuditEvent({
+      userId: req.user.id,
+      eventType: 'auth_session_restored',
+      requestId: req.requestId,
+    });
+
     return res.status(200).json({
       success: true,
       message: 'Session restored',
@@ -368,7 +438,15 @@ export const session = async (req, res) => {
   }
 };
 
-export const logout = async (_req, res) => {
+export const logout = async (req, res) => {
+  if (req.user?.id) {
+    await recordAuthAuditEvent({
+      userId: req.user.id,
+      eventType: 'auth_logout',
+      requestId: req.requestId,
+    });
+  }
+
   res.status(200).json({
     success: true,
     message: 'Logged out successfully',

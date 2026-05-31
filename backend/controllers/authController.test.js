@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import mongoose from "mongoose";
 import User from "../models/user.js";
 import WorkspaceAccess from "../models/WorkspaceAccess.js";
+import AuditEvent from "../models/AuditEvent.js";
 import { buildSessionPayload, login, logout, resendVerificationOtp, session, signup } from "./authController.js";
 
 const USER_ID = new mongoose.Types.ObjectId("507f1f77bcf86cd799439081");
@@ -412,4 +413,98 @@ test("logout endpoint returns success for cookie-clearing proxy", async () => {
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.success, true);
+});
+
+test("login records auth_login_success audit event", async () => {
+  process.env.JWT_SECRET = "test-secret-with-at-least-32-characters";
+  const originals = {
+    findOne: User.findOne,
+    compare: bcrypt.compare,
+    exists: WorkspaceAccess.exists,
+    create: AuditEvent.create,
+  };
+  const created = [];
+  try {
+    User.findOne = async () => ({
+      _id: USER_ID,
+      name: "Audit Login User",
+      email: "audit-login@example.com",
+      password: "hashed",
+      role: "taxpayer",
+      isVerified: true,
+    });
+    bcrypt.compare = async () => true;
+    WorkspaceAccess.exists = async () => null;
+    AuditEvent.create = async (doc) => {
+      created.push(doc);
+      return doc;
+    };
+    const res = mockResponse();
+
+    await login(
+      { body: { email: "audit-login@example.com", password: "password123" }, requestId: "req-audit-login" },
+      res
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(created.some((event) => event.eventType === "auth_login_success"), true);
+  } finally {
+    User.findOne = originals.findOne;
+    bcrypt.compare = originals.compare;
+    WorkspaceAccess.exists = originals.exists;
+    AuditEvent.create = originals.create;
+  }
+});
+
+test("logout records auth_logout audit event when user is present", async () => {
+  const originals = { create: AuditEvent.create };
+  const created = [];
+  try {
+    AuditEvent.create = async (doc) => {
+      created.push(doc);
+      return doc;
+    };
+    const res = mockResponse();
+
+    await logout({ user: { id: String(USER_ID) }, requestId: "req-logout-audit" }, res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(created.some((event) => event.eventType === "auth_logout"), true);
+  } finally {
+    AuditEvent.create = originals.create;
+  }
+});
+
+test("session restore records auth_session_restored audit event", async () => {
+  const originals = {
+    findById: User.findById,
+    exists: WorkspaceAccess.exists,
+    create: AuditEvent.create,
+  };
+  const created = [];
+  try {
+    User.findById = () =>
+      chainLean({
+        _id: USER_ID,
+        name: "Session User",
+        email: "session@example.com",
+        role: "taxpayer",
+        isVerified: true,
+      });
+    WorkspaceAccess.exists = async () => null;
+    AuditEvent.create = async (doc) => {
+      created.push(doc);
+      return doc;
+    };
+    const res = mockResponse();
+
+    await session({ user: { id: String(USER_ID) }, requestId: "req-session-audit" }, res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(created.some((event) => event.eventType === "auth_session_restored"), true);
+  } finally {
+    User.findById = originals.findById;
+    WorkspaceAccess.exists = originals.exists;
+    AuditEvent.create = originals.create;
+  }
 });

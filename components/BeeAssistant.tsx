@@ -346,7 +346,7 @@ function ShaderAnimation({ status }: ShaderAnimationProps) {
 const INITIAL_MESSAGES: Message[] = [
   {
     sender: "assistant",
-    text: "Hi, Iâ€™m Bee Assistant. I can guide you through filing your ITR step by step.",
+    text: "Hi, I'm Bee Assistant. I can guide you through filing your ITR step by step.",
   },
 ];
 
@@ -569,7 +569,7 @@ export default function BeeAssistant({
             if (user && user.name) {
               setMessages([{
                 sender: "assistant",
-                text: `Hi ${user.name}, Iâ€™m Bee Assistant. I can guide you through filing your ITR step by step.`
+                text: `Hi ${user.name}, I'm Bee Assistant. I can guide you through filing your ITR step by step.`
               }]);
             }
           } catch {
@@ -1118,7 +1118,13 @@ export default function BeeAssistant({
   };
 
   const getLocalConversationalReply = (message: string) => {
-    const intent = classifyBeeAssistantIntent(message);
+    const normalized = message.toLowerCase();
+    const casualPhrases = ["what's up", "whats up", "sup", "how is your day", "how are you", "how are you doing"];
+    
+    let intent = classifyBeeAssistantIntent(message);
+    if (casualPhrases.some(p => normalized.includes(p))) {
+      intent = "small_talk" as any;
+    }
     if (!isLocalBeeAssistantIntent(intent)) return null;
 
     const greeting = userFirstName ? `Hey ${userFirstName}.` : "Hey.";
@@ -1455,7 +1461,13 @@ export default function BeeAssistant({
     setInput("");
     setLastFailedMessage(null);
 
-    const intentRoute = routeBeeAssistantIntent(userMessage);
+    const normalized = userMessage.toLowerCase();
+    const casualPhrases = ["what's up", "whats up", "sup", "how is your day", "how are you", "how are you doing"];
+    
+    let intentRoute = routeBeeAssistantIntent(userMessage);
+    if (casualPhrases.some(p => normalized.includes(p))) {
+      intentRoute = { intent: "small_talk", handling: "local" } as any;
+    }
     const { intent } = intentRoute;
 
     const localReply = getLocalConversationalReply(userMessage);
@@ -1538,7 +1550,7 @@ export default function BeeAssistant({
       addAssistantMessage(
         finalReply ||
           (res.ok
-            ? "Sorry, I couldnâ€™t understand that."
+            ? "Sorry, I couldn't understand that."
             : "Bee Assistant request failed."),
         undefined,
         data.explainability,

@@ -1,6 +1,6 @@
 import express from 'express';
 import { forgotPassword, login, logout, resendVerificationOtp, resetPassword, session, signup, verifyOtp } from '../controllers/authController.js';
-import { requireAuth } from '../middleware/authMiddleware.js';
+import { requireAuth, optionalAuth } from '../middleware/authMiddleware.js';
 import { authRateLimit } from '../middleware/securityMiddleware.js';
 import { validateBody } from '../middleware/validationMiddleware.js';
 
@@ -41,7 +41,7 @@ router.post(
   resendVerificationOtp
 );
 router.get('/session', requireAuth, session);
-router.post('/logout', logout);
+router.post('/logout', optionalAuth, logout);
 router.post(
   '/forgot-password',
   validateBody({
