@@ -1,0 +1,17 @@
+﻿FORM 16
+Assessment Year 2026-27
+Financial Year 2025-26
+
+Employee Name: Test User
+PAN: ABCDE1234F
+
+Employer Name: Demo Pvt Ltd
+Employer TAN: BLRD12345A
+Employer PAN: AABCD1234E
+
+Gross Salary: 850000
+Income chargeable under salaries: 780000
+TDS deducted: 42000
+Section 80C: 150000
+Section 80D Health Insurance: 25000
+HRA Exemption: 60000

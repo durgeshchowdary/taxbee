@@ -40,7 +40,11 @@ export const rateLimit = ({ name, windowMs, max }) => (req, res, next) => {
   return next();
 };
 
-const developmentAuthRateLimit = rateLimit({ name: "auth", windowMs: 60 * 1000, max: 100 });
+const developmentAuthRateLimit = rateLimit({
+  name: "auth",
+  windowMs: 60 * 1000,
+  max: 10000,
+});
 const productionAuthRateLimit = rateLimit({ name: "auth", windowMs: 15 * 60 * 1000, max: 10 });
 
 export const authRateLimit = (req, res, next) =>

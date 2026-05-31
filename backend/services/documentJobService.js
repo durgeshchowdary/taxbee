@@ -147,7 +147,7 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
     throw error;
   }
 
-  const processed = processTaxDocument({
+ const processed = await processTaxDocument({
     fileName,
     mimeType,
     text: extracted.text,

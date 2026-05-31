@@ -1,22 +1,45 @@
-import { NextRequest, NextResponse } from "next/server";
-import { authForwardHeaders, BACKEND_URL, clearAuthCookieOptions, readBackendJson, shouldClearAuthCookie } from "@/app/api/_utils/backend";
+import { NextResponse } from "next/server";
 
-export async function GET(req: NextRequest) {
+const BACKEND_URL =
+  process.env.BACKEND_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://localhost:5000";
+
+export async function GET(request: Request) {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/auth/session`, {
-      headers: authForwardHeaders(req),
+    const cookie = request.headers.get("cookie") || "";
+
+    const backendResponse = await fetch(`${BACKEND_URL}/api/auth/session`, {
+      method: "GET",
+      headers: {
+        cookie,
+        accept: "application/json",
+      },
+      cache: "no-store",
     });
 
-    const data = await readBackendJson(res);
-    const response = NextResponse.json(data, { status: res.status });
-    if (shouldClearAuthCookie(res.status, data)) {
-      response.cookies.set("auth_token", "", clearAuthCookieOptions);
+    const data = await backendResponse.json().catch(() => ({
+      success: false,
+      message: "Session check failed",
+    }));
+
+    const response = NextResponse.json(data, {
+      status: backendResponse.status,
+    });
+
+    const setCookie = backendResponse.headers.get("set-cookie");
+    if (setCookie) {
+      response.headers.set("set-cookie", setCookie);
     }
+
     return response;
-  } catch (error) {
-    console.error("Session proxy error:", error);
+  } catch {
     return NextResponse.json(
-      { success: false, message: "Backend is not reachable. Session could not be restored." },
+      {
+        success: false,
+        message: "Backend is not reachable. Session could not be restored.",
+        code: "BACKEND_UNREACHABLE",
+      },
       { status: 503 }
     );
   }

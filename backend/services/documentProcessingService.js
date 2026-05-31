@@ -3,11 +3,13 @@ import { extractPdfText, isPdfMimeType } from "./pdfTextExtractor.js";
 import { extractImageText, isImageMimeType } from "./imageOcrExtractor.js";
 import { getOcrProviderName } from "./ocrProviderService.js";
 import { PdfPageRenderError, renderPdfPagesToImages } from "./pdfPageRenderer.js";
+import { extractTaxFieldsWithGemini } from "./geminiExtractionService.js";
 
 const MAX_TEXT_PREVIEW_LENGTH = 4000;
 const MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
 const MAX_BASE64_CHARS = Math.ceil((MAX_UPLOAD_BYTES * 4) / 3) + 128;
 const MIN_EXTRACTED_TEXT_CHARS = 20;
+
 const SUPPORTED_MIME_TYPES = new Set([
   "application/pdf",
   "application/json",
@@ -173,10 +175,12 @@ const flattenJson = (value, prefix = "", rows = []) => {
     value.forEach((item, index) => flattenJson(item, `${prefix}.${index}`, rows));
     return rows;
   }
+
   if (value && typeof value === "object") {
     Object.entries(value).forEach(([key, child]) => flattenJson(child, prefix ? `${prefix}.${key}` : key, rows));
     return rows;
   }
+
   rows.push({ key: prefix, value: String(value ?? "") });
   return rows;
 };
@@ -187,8 +191,11 @@ const parseDelimitedRows = (text) => {
     .split(/\n/)
     .map((line) => line.split(delimiter).map((cell) => cell.trim().replace(/^"|"$/g, "")))
     .filter((row) => row.some(Boolean));
+
   if (rows.length < 2) return [];
+
   const headers = rows[0];
+
   return rows.slice(1).flatMap((row, rowIndex) =>
     headers.map((header, index) => ({
       key: `${header || `Column ${index + 1}`} row ${rowIndex + 1}`,
@@ -213,6 +220,7 @@ const detectDocumentType = ({ fileName = "", mimeType = "", text = "", structure
   if (haystack.includes("rent receipt") || haystack.includes("rent paid")) return DOCUMENT_TYPES.RENT_RECEIPT;
   if (haystack.includes("capital gain") || haystack.includes("broker") || haystack.includes("contract note")) return DOCUMENT_TYPES.CAPITAL_GAINS_STATEMENT;
   if (haystack.includes("tax")) return DOCUMENT_TYPES.TAX_STATEMENT;
+
   return DOCUMENT_TYPES.UNKNOWN;
 };
 
@@ -222,10 +230,12 @@ const findAmountNearTerm = (text, term) => {
     new RegExp(`${escaped}[^\\d-]{0,80}(?:rs\\.?|inr|₹)?\\s*(-?\\d[\\d,]*(?:\\.\\d{1,2})?)`, "i"),
     new RegExp(`(?:rs\\.?|inr|₹)?\\s*(-?\\d[\\d,]*(?:\\.\\d{1,2})?)[^\\n]{0,80}${escaped}`, "i"),
   ];
+
   for (const regex of regexes) {
     const match = text.match(regex);
     if (match) return match[1];
   }
+
   return "";
 };
 
@@ -241,6 +251,7 @@ const findValue = ({ text, structuredRows, rule }) => {
       const value = String(row.value || "");
       return key.includes(term) && value.trim();
     });
+
     if (structured) return structured.value;
 
     const amount = findAmountNearTerm(text, term);
@@ -252,10 +263,13 @@ const findValue = ({ text, structuredRows, rule }) => {
 
 const confidenceFor = ({ value, rule, documentType, structuredRows }) => {
   if (!value) return 0;
+
   let confidence = structuredRows.length ? 72 : 62;
+
   if (rule.documentBoost?.includes(documentType)) confidence += 14;
   if (rule.valuePattern && rule.valuePattern.test(value)) confidence += 10;
   if (toNumber(value) > 0) confidence += 6;
+
   return Math.min(confidence, 96);
 };
 
@@ -263,12 +277,14 @@ const totalsFromFields = (fields) =>
   fields.reduce(
     (totals, field) => {
       const amount = toNumber(field.value);
+
       if (field.path === "taxCredits.tds") totals.tds += amount;
       else if (field.path.includes("Interest")) totals.interest += amount;
       else if (field.path === "otherSources.fdInterest" || field.path === "otherSources.savingsInterest") totals.interest += amount;
       else if (field.path === "otherSources.dividendIncome") totals.dividend += amount;
       else if (field.path.startsWith("salary.")) totals.salary += amount;
       else if (amount > 0) totals.other += amount;
+
       return totals;
     },
     { tds: 0, interest: 0, dividend: 0, salary: 0, other: 0 }
@@ -276,28 +292,71 @@ const totalsFromFields = (fields) =>
 
 const detectedSectionsFromFields = (fields, documentType) => {
   const sections = new Set();
+
   if (documentType !== DOCUMENT_TYPES.UNKNOWN) sections.add(documentType.replaceAll("_", " "));
+
   fields.forEach((field) => {
     if (field.mappedSection) sections.add(field.mappedSection);
   });
+
   return Array.from(sections);
 };
+
+const buildRuleBasedFields = ({ fileName, searchableText, structuredRows, documentType }) =>
+  FIELD_RULES.map((rule) => {
+    const value = findValue({ text: searchableText, structuredRows, rule });
+    if (!value) return null;
+
+    const confidence = confidenceFor({ value, rule, documentType, structuredRows });
+
+    return {
+      fieldId: `${crypto.randomUUID()}:${rule.path}`,
+      source: fileName,
+      label: rule.label,
+      path: rule.path,
+      value: String(value).trim(),
+      originalValue: String(value).trim(),
+      mappedSection: rule.mappedSection,
+      confidence,
+      status: "extracted",
+      userOverride: "",
+      updatedAt: new Date(),
+    };
+  }).filter(Boolean);
+
+const buildAuditTrail = ({ fields, fileName, parserName = "Document parser" }) =>
+  fields.map((field) => ({
+    entryId: crypto.randomUUID(),
+    timestamp: new Date(),
+    label: `${parserName} extracted ${field.label}`,
+    key: "importedDocument",
+    path: field.path,
+    oldValue: "",
+    newValue: field.value,
+    source: fileName,
+    actor: "parser",
+  }));
 
 export const validateUpload = ({ fileName = "", mimeType = "", sizeBytes = 0 }) => {
   if (!fileName) {
     return { ok: false, status: 400, message: "fileName is required" };
   }
+
   if (String(fileName).length > 180 || /[\\/:*?"<>|]/.test(String(fileName))) {
     return { ok: false, status: 400, message: "fileName contains unsupported characters" };
   }
+
   if (sizeBytes > MAX_UPLOAD_BYTES) {
     return { ok: false, status: 413, message: "File is too large. Upload documents up to 6 MB." };
   }
+
   if (sizeBytes < 0) {
     return { ok: false, status: 400, message: "Invalid file size" };
   }
+
   const lowerName = fileName.toLowerCase();
   const extensionAllowed = /\.(json|csv|tsv|txt|pdf|png|jpe?g|webp|tiff?)$/i.test(lowerName);
+
   if (!SUPPORTED_MIME_TYPES.has(String(mimeType).toLowerCase()) || !extensionAllowed) {
     return {
       ok: false,
@@ -305,22 +364,27 @@ export const validateUpload = ({ fileName = "", mimeType = "", sizeBytes = 0 }) 
       message: "Unsupported file type. Upload PDF, image, JSON, CSV, TSV, or TXT.",
     };
   }
+
   return { ok: true };
 };
 
 const decodeBase64 = (fileBase64 = "") => {
   const cleaned = String(fileBase64).replace(/^data:[^;]+;base64,/, "");
+
   if (!cleaned) return null;
+
   if (cleaned.length > MAX_BASE64_CHARS || !/^[A-Za-z0-9+/=\s]+$/.test(cleaned)) {
     const error = new Error("Invalid or oversized base64 upload payload");
     error.status = 413;
     throw error;
   }
+
   return Buffer.from(cleaned, "base64");
 };
 
 const hasExpectedSignature = ({ buffer, mimeType = "", fileName = "" }) => {
   if (!buffer) return true;
+
   const name = String(fileName).toLowerCase();
   const type = String(mimeType).toLowerCase();
   const hex = buffer.subarray(0, 12).toString("hex");
@@ -331,15 +395,18 @@ const hasExpectedSignature = ({ buffer, mimeType = "", fileName = "" }) => {
   if (type === "image/jpeg" || type === "image/jpg" || /\.jpe?g$/i.test(name)) return hex.startsWith("ffd8ff");
   if (type === "image/webp" || name.endsWith(".webp")) return ascii.startsWith("RIFF") && ascii.slice(8, 12) === "WEBP";
   if (type === "image/tiff" || /\.tiff?$/i.test(name)) return hex.startsWith("49492a00") || hex.startsWith("4d4d002a");
+
   return true;
 };
 
 const extractScannedPdfText = async ({ buffer, fileName, pdfResult }) => {
   let rendered;
+
   try {
     rendered = await renderPdfPagesToImages({ buffer, fileName });
   } catch (error) {
     const known = error instanceof PdfPageRenderError;
+
     return {
       text: "",
       extractionMetadata: {
@@ -356,6 +423,7 @@ const extractScannedPdfText = async ({ buffer, fileName, pdfResult }) => {
       ],
     };
   }
+
   const pageResults = [];
   const textParts = [];
 
@@ -365,6 +433,7 @@ const extractScannedPdfText = async ({ buffer, fileName, pdfResult }) => {
       mimeType: image.mimeType,
       fileName: image.fileName,
     });
+
     pageResults.push({
       pageNumber: image.pageNumber,
       textLength: ocrResult.text.length,
@@ -372,6 +441,7 @@ const extractScannedPdfText = async ({ buffer, fileName, pdfResult }) => {
       code: ocrResult.metadata?.code,
       engine: ocrResult.metadata?.ocrEngine,
     });
+
     if (ocrResult.text.trim()) {
       textParts.push(`Page ${image.pageNumber}\n${ocrResult.text.trim()}`);
     }
@@ -380,9 +450,11 @@ const extractScannedPdfText = async ({ buffer, fileName, pdfResult }) => {
   const confidences = pageResults
     .map((item) => Number(item.confidence))
     .filter((item) => Number.isFinite(item));
+
   const confidenceAverage = confidences.length
     ? Math.round(confidences.reduce((total, item) => total + item, 0) / confidences.length)
     : null;
+
   const failedPage = pageResults.find((item) => item.code);
 
   return {
@@ -411,11 +483,13 @@ export const extractDocumentText = async ({ fileName, mimeType = "", text = "", 
   const buffer = decodeBase64(fileBase64);
   const sizeBytes = buffer?.length || Buffer.byteLength(String(text || ""), "utf8");
   const validation = validateUpload({ fileName, mimeType, sizeBytes });
+
   if (!validation.ok) {
     const error = new Error(validation.message);
     error.status = validation.status;
     throw error;
   }
+
   if (!hasExpectedSignature({ buffer, mimeType, fileName })) {
     const error = new Error("File content does not match the declared type");
     error.status = 415;
@@ -424,6 +498,7 @@ export const extractDocumentText = async ({ fileName, mimeType = "", text = "", 
 
   if (isPdfMimeType(mimeType, fileName) && buffer) {
     const pdfResult = await extractPdfText({ buffer, fileName });
+
     if (pdfResult.text.length >= MIN_EXTRACTED_TEXT_CHARS) {
       return {
         text: pdfResult.text,
@@ -434,6 +509,7 @@ export const extractDocumentText = async ({ fileName, mimeType = "", text = "", 
 
     if (getOcrProviderName() === "none") {
       const ocrResult = await extractImageText({ buffer, mimeType, fileName });
+
       return {
         text: ocrResult.text,
         extractionMetadata: {
@@ -452,6 +528,7 @@ export const extractDocumentText = async ({ fileName, mimeType = "", text = "", 
 
   if (isImageMimeType(mimeType, fileName) && buffer) {
     const ocrResult = await extractImageText({ buffer, mimeType, fileName });
+
     return {
       text: ocrResult.text,
       extractionMetadata: {
@@ -471,53 +548,55 @@ export const extractDocumentText = async ({ fileName, mimeType = "", text = "", 
   };
 };
 
-export const processTaxDocument = ({ fileName, mimeType = "", text = "", extractionMetadata = {}, extractionWarnings = [] }) => {
+export const processTaxDocument = async ({
+  fileName,
+  mimeType = "",
+  text = "",
+  extractionMetadata = {},
+  extractionWarnings = [],
+}) => {
   const normalizedText = normalizeText(text);
   const parsedJson = parseMaybeJson(normalizedText);
-  const structuredRows = parsedJson
-    ? flattenJson(parsedJson)
-    : parseDelimitedRows(normalizedText);
+  const structuredRows = parsedJson ? flattenJson(parsedJson) : parseDelimitedRows(normalizedText);
   const searchableText = parsedJson
     ? `${normalizedText}\n${structuredRows.map((row) => `${row.key}: ${row.value}`).join("\n")}`
     : normalizedText;
-  const documentType = detectDocumentType({
+
+  const detectedType = detectDocumentType({
     fileName,
     mimeType,
     text: searchableText,
     structuredRows,
   });
 
-  const extractedFields = FIELD_RULES.map((rule) => {
-    const value = findValue({ text: searchableText, structuredRows, rule });
-    if (!value) return null;
-    const confidence = confidenceFor({ value, rule, documentType, structuredRows });
-    return {
-      fieldId: `${crypto.randomUUID()}:${rule.path}`,
-      source: fileName,
-      label: rule.label,
-      path: rule.path,
-      value: String(value).trim(),
-      originalValue: String(value).trim(),
-      mappedSection: rule.mappedSection,
-      confidence,
-      status: "extracted",
-      userOverride: "",
-      updatedAt: new Date(),
-    };
-  }).filter(Boolean);
+  const geminiResult = await extractTaxFieldsWithGemini({
+    fileName,
+    mimeType,
+    text: searchableText,
+  });
+
+  const useGemini = Boolean(geminiResult?.ok && geminiResult.extractedFields?.length > 0);
+
+  const documentType = useGemini && geminiResult.documentType
+    ? geminiResult.documentType
+    : detectedType;
+
+  const extractedFields = useGemini
+    ? geminiResult.extractedFields
+    : buildRuleBasedFields({
+        fileName,
+        searchableText,
+        structuredRows,
+        documentType,
+      });
 
   const detectedSections = detectedSectionsFromFields(extractedFields, documentType);
-  const auditTrail = extractedFields.map((field) => ({
-    entryId: crypto.randomUUID(),
-    timestamp: new Date(),
-    label: `Document parser extracted ${field.label}`,
-    key: "importedDocument",
-    path: field.path,
-    oldValue: "",
-    newValue: field.value,
-    source: fileName,
-    actor: "parser",
-  }));
+
+  const auditTrail = buildAuditTrail({
+    fields: extractedFields,
+    fileName,
+    parserName: useGemini ? "Gemini parser" : "Document parser",
+  });
 
   return {
     documentType,
@@ -531,12 +610,28 @@ export const processTaxDocument = ({ fileName, mimeType = "", text = "", extract
     auditTrail,
     extractedTextPreview: searchableText.slice(0, MAX_TEXT_PREVIEW_LENGTH),
     sourceMetadata: {
-      parserVersion: "documentProcessingService.v1",
-      parserMode: parsedJson ? "json" : structuredRows.length ? "delimited-text" : "plain-text",
+      parserVersion: useGemini ? "documentProcessingService.v2" : "documentProcessingService.v1",
+      parserMode: useGemini
+        ? "gemini"
+        : parsedJson
+          ? "json"
+          : structuredRows.length
+            ? "delimited-text"
+            : "plain-text",
       ocrRequired: /pdf|image/i.test(mimeType) && !normalizedText,
       extractedFieldCount: extractedFields.length,
       extraction: extractionMetadata,
       extractionWarnings,
+      gemini: {
+        enabled: geminiResult?.used === true,
+        used: useGemini,
+        provider: geminiResult?.provider || null,
+        model: geminiResult?.model || null,
+        confidence: geminiResult?.confidence || null,
+        warnings: geminiResult?.warnings || [],
+        fallbackReason: useGemini ? "" : geminiResult?.reason || "",
+        errorMessage: useGemini ? "" : geminiResult?.errorMessage || "",
+      },
     },
     rawPreview: parsedJson ? { kind: "json", keys: structuredRows.slice(0, 25) } : null,
   };

@@ -13,10 +13,12 @@ const encryptionKey = () =>
 
 export const encryptPayload = (payload) => {
   if (!payload) return null;
+
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
   const plaintext = Buffer.from(JSON.stringify(payload), "utf8");
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+
   return {
     alg: "aes-256-gcm",
     iv: iv.toString("base64"),
@@ -27,16 +29,20 @@ export const encryptPayload = (payload) => {
 
 export const decryptPayload = (securePayload) => {
   if (!securePayload) return null;
+
   const decipher = crypto.createDecipheriv(
     "aes-256-gcm",
     encryptionKey(),
     Buffer.from(securePayload.iv, "base64")
   );
+
   decipher.setAuthTag(Buffer.from(securePayload.tag, "base64"));
+
   const decrypted = Buffer.concat([
     decipher.update(Buffer.from(securePayload.ciphertext, "base64")),
     decipher.final(),
   ]);
+
   return JSON.parse(decrypted.toString("utf8"));
 };
 
@@ -84,7 +90,9 @@ export const enqueueJob = async ({
     actorType: "system",
     metadata: { jobId: String(job._id), inputRef: job.inputRef },
   });
+
   recordJobMetric({ type, status: "queued" });
+
   logger.info("job_queued", {
     jobId: String(job._id),
     type,
@@ -98,12 +106,22 @@ export const enqueueJob = async ({
 export const claimNextJob = async ({ workerId, lockMs = 5 * 60 * 1000 } = {}) => {
   const now = new Date();
   const staleLock = new Date(Date.now() - lockMs);
-  const job = await Job.findOneAndUpdate(
+
+  const result = await Job.collection.findOneAndUpdate(
     {
       status: { $in: ["queued", "processing"] },
       runAfter: { $lte: now },
-      $or: [{ lockedAt: null }, { lockedAt: { $lte: staleLock } }],
-      attempts: { $lt: 10 },
+      $and: [
+        {
+          $or: [
+            { lockedAt: null },
+            { lockedAt: { $lte: staleLock } },
+          ],
+        },
+        {
+          attempts: { $in: [0, 1, 2, null] },
+        },
+      ],
     },
     {
       $set: {
@@ -114,10 +132,21 @@ export const claimNextJob = async ({ workerId, lockMs = 5 * 60 * 1000 } = {}) =>
       },
       $inc: { attempts: 1 },
     },
-    { new: true, sort: { priority: -1, createdAt: 1 } }
-  ).select("+securePayload");
+    {
+      returnDocument: "after",
+      sort: { priority: -1, createdAt: 1 },
+    }
+  );
+
+  const rawJob = result?.value || result;
+
+  if (!rawJob?._id) return null;
+
+  const job = await Job.findById(rawJob._id).select("+securePayload");
+
   if (job) {
     recordJobMetric({ type: job.type, status: "claimed" });
+
     logger.info("job_claimed", {
       jobId: String(job._id),
       type: job.type,
@@ -126,6 +155,7 @@ export const claimNextJob = async ({ workerId, lockMs = 5 * 60 * 1000 } = {}) =>
       maxAttempts: job.maxAttempts,
     });
   }
+
   return job;
 };
 
@@ -156,7 +186,9 @@ export const completeJob = async (job, resultRef = {}) => {
     actorType: "system",
     metadata: { jobId: String(job._id), resultRef },
   });
+
   recordJobMetric({ type: job.type, status: "completed" });
+
   logger.info("job_completed", {
     jobId: String(job._id),
     type: job.type,
@@ -171,6 +203,7 @@ export const failJob = async (job, error) => {
   const failureReason = String(error?.message || "Job failed").slice(0, 1000);
   const hasRetry = job.attempts < job.maxAttempts;
   const delay = hasRetry ? RETRY_BASE_DELAY_MS * job.attempts : FINAL_FAILURE_ATTEMPT_DELAY_MS;
+
   const update = hasRetry
     ? {
         status: "queued",
@@ -190,7 +223,11 @@ export const failJob = async (job, error) => {
         securePayload: null,
       };
 
-  const updated = await Job.findByIdAndUpdate(job._id, { $set: update }, { new: true });
+  const updated = await Job.findByIdAndUpdate(
+    job._id,
+    { $set: update },
+    { new: true }
+  );
 
   if (!hasRetry) {
     await recordAuditEvent({
@@ -204,7 +241,9 @@ export const failJob = async (job, error) => {
       metadata: { jobId: String(job._id), failureReason },
     });
   }
+
   recordJobMetric({ type: job.type, status: hasRetry ? "retry" : "failed" });
+
   logger.warn("job_failed", {
     jobId: String(job._id),
     type: job.type,
@@ -217,9 +256,12 @@ export const failJob = async (job, error) => {
   return updated;
 };
 
-export const cleanupStaleJobs = async ({ olderThanMs = 7 * 24 * 60 * 60 * 1000 } = {}) => {
+export const cleanupStaleJobs = async ({
+  olderThanMs = 7 * 24 * 60 * 60 * 1000,
+} = {}) => {
   const cutoff = new Date(Date.now() - olderThanMs);
-  return Job.updateMany(
+
+  return Job.collection.updateMany(
     {
       status: { $in: ["completed", "failed"] },
       updatedAt: { $lt: cutoff },
