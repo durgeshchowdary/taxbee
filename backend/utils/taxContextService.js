@@ -3,37 +3,19 @@ import ImportedDocument from "../models/ImportedDocument.js";
 import User from "../models/user.js";
 import AuditEvent from "../models/AuditEvent.js";
 import mongoose from "mongoose";
+import { getCache, setCache, deleteCache, clearCache } from "../services/cacheService.js";
 
-const TAX_CONTEXT_CACHE_TTL_MS = 30_000;
-const TAX_CONTEXT_CACHE_LIMIT = 500;
-const taxContextCache = new Map();
+const TAX_CONTEXT_CACHE_TTL_SECONDS = 30;
 
-const cacheKey = (userId) => String(userId);
+const cacheKey = (userId) => `tax-context:${userId}`;
 
-export const invalidateUserTaxContextCache = (userId) => {
+export const invalidateUserTaxContextCache = async (userId) => {
   if (!userId) return;
-  taxContextCache.delete(cacheKey(userId));
+  await deleteCache(cacheKey(userId));
 };
 
-export const clearTaxContextCache = () => taxContextCache.clear();
-
-const getCachedTaxContext = (userId) => {
-  const cached = taxContextCache.get(cacheKey(userId));
-  if (!cached || cached.expiresAt <= Date.now()) {
-    taxContextCache.delete(cacheKey(userId));
-    return null;
-  }
-  return cached.value;
-};
-
-const setCachedTaxContext = (userId, value) => {
-  if (taxContextCache.size >= TAX_CONTEXT_CACHE_LIMIT) {
-    taxContextCache.delete(taxContextCache.keys().next().value);
-  }
-  taxContextCache.set(cacheKey(userId), {
-    value,
-    expiresAt: Date.now() + TAX_CONTEXT_CACHE_TTL_MS,
-  });
+export const clearTaxContextCache = async () => {
+  await clearCache();
 };
 
 const hasAnyAmount = (value = {}) =>
@@ -77,6 +59,7 @@ const SALARY_INCOME_KEYS = [
   "keymanInsurance",
   "otherReceipts",
 ];
+
 const HOUSE_PROPERTY_INCOME_KEYS = ["annualRent"];
 const PGBP_INCOME_KEYS = ["businessReceipts", "otherBusinessIncome"];
 const CAPITAL_GAINS_INCOME_KEYS = ["saleValue"];
@@ -93,7 +76,8 @@ const hasDraftIncomeActivity = (draft = {}) =>
 const hasTaxpayerProfileData = (profile = {}) =>
   PROFILE_KEYS.some((key) => String(profile?.[key] || "").trim());
 
-const safeFieldPath = (field = {}) => (typeof field.path === "string" ? field.path.trim() : "");
+const safeFieldPath = (field = {}) =>
+  typeof field.path === "string" ? field.path.trim() : "";
 
 const hasCanonicalFieldPath = (field = {}) => Boolean(safeFieldPath(field));
 
@@ -104,20 +88,19 @@ const hasImportActivity = (doc = {}) =>
   hasRealExtractedFields(doc) || hasAnyAmount(doc.totals);
 
 const hasAisImportData = (value) =>
-  Boolean(
-    value &&
-      typeof value === "object" &&
-      hasAnyAmount(value.totals)
-  );
+  Boolean(value && typeof value === "object" && hasAnyAmount(value.totals));
 
 const setPathValue = (record, path, value) => {
   if (!path) return;
+
   const segments = path.split(".");
   let cursor = record;
+
   segments.slice(0, -1).forEach((segment) => {
     if (!cursor[segment] || typeof cursor[segment] !== "object") cursor[segment] = {};
     cursor = cursor[segment];
   });
+
   cursor[segments[segments.length - 1]] = value;
 };
 
@@ -193,7 +176,9 @@ export const buildImportSummary = (imports = []) => {
     }),
     { tds: 0, interest: 0, dividend: 0, salary: 0, other: 0 }
   );
+
   const detectedSections = [...new Set(imports.flatMap((item) => item.detectedSections || []))];
+
   const extractionReview = imports.flatMap((item) =>
     (item.extractedFields || []).filter(hasCanonicalFieldPath).map((field) => ({
       id: field.fieldId,
@@ -223,31 +208,41 @@ export const buildImportSummary = (imports = []) => {
 
 export const applyReviewedImportsToDraft = (draft, extractionReview) => {
   const nextDraft = JSON.parse(JSON.stringify(draft || {}));
+
   extractionReview
     .filter(hasCanonicalFieldPath)
     .filter((field) => field.status === "confirmed" || field.status === "overridden")
     .filter((field) => !safeFieldPath(field).startsWith("deductions."))
     .forEach((field) => setPathValue(nextDraft, safeFieldPath(field), field.value));
+
   return nextDraft;
 };
 
 export const applyReviewedImportsToDeductions = (deductions, extractionReview) => {
   const nextDeductions = JSON.parse(JSON.stringify(deductions || {}));
+
   extractionReview
     .filter(hasCanonicalFieldPath)
     .filter((field) => field.status === "confirmed" || field.status === "overridden")
     .filter((field) => safeFieldPath(field).startsWith("deductions."))
-    .forEach((field) => setPathValue(nextDeductions, safeFieldPath(field).replace(/^deductions\./, ""), field.value));
+    .forEach((field) =>
+      setPathValue(nextDeductions, safeFieldPath(field).replace(/^deductions\./, ""), field.value)
+    );
+
   return nextDeductions;
 };
 
 export const applyReviewedImportsByPrefix = (prefix, extractionReview) => {
   const values = {};
+
   extractionReview
     .filter(hasCanonicalFieldPath)
     .filter((field) => field.status === "confirmed" || field.status === "overridden")
     .filter((field) => safeFieldPath(field).startsWith(`${prefix}.`))
-    .forEach((field) => setPathValue(values, safeFieldPath(field).replace(new RegExp(`^${prefix}\\.`), ""), field.value));
+    .forEach((field) =>
+      setPathValue(values, safeFieldPath(field).replace(new RegExp(`^${prefix}\\.`), ""), field.value)
+    );
+
   return values;
 };
 
@@ -296,16 +291,18 @@ const serializeAuditEvent = (event) => ({
 const buildProvenanceMap = (events = []) =>
   events.reduce((map, event) => {
     if (!event.fieldKey) return map;
+
     const key = event.fieldKey;
     if (!map[key]) map[key] = [];
     map[key].push(serializeAuditEvent(event));
+
     return map;
   }, {});
 
 export const getUserTaxContext = async (userId) => {
   if (!userId) return null;
 
-  const cached = getCachedTaxContext(userId);
+  const cached = await getCache(cacheKey(userId));
   if (cached) return cached;
 
   const user = await User.findById(userId).select("name email isVerified").lean();
@@ -328,8 +325,10 @@ export const getUserTaxContext = async (userId) => {
         .lean()
     ),
   ]);
+
   const safeDraft = normalizeDraftForContext(draft);
   const importSummary = buildImportSummary(imports);
+
   const baseDraft = safeDraft
     ? {
         salary: safeDraft.salary,
@@ -339,20 +338,25 @@ export const getUserTaxContext = async (userId) => {
         otherSources: safeDraft.otherSources,
       }
     : {};
+
   const extractionReview = importSummary.extractionReview.length
     ? importSummary.extractionReview
     : safeDraft?.extractionReview || [];
+
   const currentDraft = applyReviewedImportsToDraft(baseDraft, extractionReview);
   const deductions = applyReviewedImportsToDeductions(safeDraft?.deductions || {}, extractionReview);
   const taxCredits = applyReviewedImportsByPrefix("taxCredits", extractionReview);
   const importedTaxpayerProfile = applyReviewedImportsByPrefix("taxpayerProfile", extractionReview);
   const candidateAisImport = importSummary.aisImport || safeDraft?.aisImport || null;
   const aisImport = hasAisImportData(candidateAisImport) ? candidateAisImport : null;
+
   const hasReviewedExtraction = extractionReview.some(
     (field) => field.status === "confirmed" || field.status === "overridden"
   );
+
   const hasImportedDocuments = imports.some(hasImportActivity);
   const taxpayerProfile = { ...(safeDraft?.taxpayerProfile || {}), ...importedTaxpayerProfile };
+
   const hasTaxData =
     hasImportedDocuments ||
     hasAisImportData(aisImport) ||
@@ -360,6 +364,7 @@ export const getUserTaxContext = async (userId) => {
     hasAnyAmount(deductions) ||
     hasDraftIncomeActivity(currentDraft) ||
     hasTaxpayerProfileData(taxpayerProfile);
+
   const context = {
     user: {
       _id: user._id,
@@ -383,11 +388,11 @@ export const getUserTaxContext = async (userId) => {
       !hasAnyAmount(currentDraft.salary) && !aisImport ? "Form 16 or salary details" : "",
     ].filter(Boolean),
     calculationStatus: hasTaxData ? "pending_calculation" : "not_calculated",
-    missingData: hasTaxData
-      ? []
-      : ["income", "deductions", "importedDocuments"].filter(Boolean),
+    missingData: hasTaxData ? [] : ["income", "deductions", "importedDocuments"].filter(Boolean),
   };
-  setCachedTaxContext(userId, context);
+
+  await setCache(cacheKey(userId), context, TAX_CONTEXT_CACHE_TTL_SECONDS);
+
   return context;
 };
 
