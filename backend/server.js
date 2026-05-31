@@ -25,6 +25,7 @@ import { sanitizeRequestInput } from "./middleware/validationMiddleware.js";
 import { requestLogger } from "./middleware/observabilityMiddleware.js";
 import { logger } from "./utils/safeLogger.js";
 import { getHealth } from "./controllers/healthController.js";
+import searchRoutes from "./routes/searchRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -41,6 +42,7 @@ app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(requestId);
 app.use(securityHeaders);
+app.use("/api/search", searchRoutes);
 
 app.use(
   cors({
