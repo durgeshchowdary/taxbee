@@ -11,6 +11,11 @@ import { enqueueJob, serializeJob } from "../services/jobQueueService.js";
 import { extractionAuditEvents, processUploadedDocument } from "../services/documentJobService.js";
 import { invalidateUserTaxContextCache, sanitizeQueryError } from "../utils/taxContextService.js";
 import { pageResult, parsePagination } from "../utils/pagination.js";
+import {
+  base64ToBuffer,
+  shouldUseS3Storage,
+  uploadBufferToS3,
+} from "../services/storageService.js";
 
 const normalizeDocumentType = (value = "") => {
   const normalized = String(value).toUpperCase();
@@ -58,6 +63,16 @@ const serializeImport = (doc, { includeAuditTrail = true, includePreview = true 
   documentType: doc.documentType,
   fileName: doc.fileName,
   mimeType: doc.mimeType || "",
+  fileSize: doc.fileSize || 0,
+  storageProvider: doc.storageProvider || "mongo",
+  storageRef: doc.storageRef?.key
+    ? {
+        key: doc.storageRef.key,
+        region: doc.storageRef.region,
+        contentType: doc.storageRef.contentType,
+        uploadedAt: doc.storageRef.uploadedAt?.toISOString?.() || doc.storageRef.uploadedAt,
+      }
+    : null,
   importedAt: doc.importedAt?.toISOString?.() || doc.importedAt,
   reviewStatus: doc.reviewStatus || "extracted",
   detectedSections: doc.detectedSections || [],
@@ -101,6 +116,7 @@ const shouldProcessAsync = ({ fileBase64 = "", mimeType = "", sizeBytes = 0, tex
 
 export const uploadImport = async (req, res) => {
   const startedAt = Date.now();
+
   try {
     const { fileName, mimeType = "", text = "", fileBase64 = "", sizeBytes = 0 } = req.body || {};
 
@@ -115,6 +131,9 @@ export const uploadImport = async (req, res) => {
         documentType: normalizeDocumentType(fileName),
         fileName: sanitizeText(fileName, 180),
         mimeType,
+        fileSize: Number(sizeBytes) || 0,
+        storageProvider: "mongo",
+        storageRef: null,
         reviewStatus: "queued",
         detectedSections: [],
         totals: {},
@@ -127,6 +146,48 @@ export const uploadImport = async (req, res) => {
         },
       });
 
+      let storageRef = null;
+      let storageProvider = "mongo";
+      let jobUploadPayload = { fileName, mimeType, text, fileBase64, sizeBytes };
+
+      if (shouldUseS3Storage() && fileBase64) {
+        const buffer = base64ToBuffer(fileBase64);
+
+        const uploaded = await uploadBufferToS3({
+          userId: req.user.id,
+          importedDocumentId: String(importedDocument._id),
+          fileName,
+          mimeType,
+          buffer,
+        });
+
+        storageProvider = "s3";
+        storageRef = {
+          bucket: uploaded.bucket,
+          key: uploaded.key,
+          region: uploaded.region,
+          contentType: uploaded.contentType,
+          etag: uploaded.etag,
+          uploadedAt: uploaded.uploadedAt,
+        };
+
+        importedDocument.storageProvider = "s3";
+        importedDocument.storageRef = storageRef;
+        importedDocument.fileSize = uploaded.sizeBytes;
+        importedDocument.sourceMetadata = {
+          ...importedDocument.sourceMetadata,
+          storageProvider: "s3",
+          storageKey: uploaded.key,
+        };
+
+        jobUploadPayload = {
+          fileName,
+          mimeType,
+          sizeBytes: uploaded.sizeBytes,
+          storageProvider: "s3",
+        };
+      }
+
       const job = await enqueueJob({
         type: "document_extraction",
         userId: req.user.id,
@@ -134,9 +195,10 @@ export const uploadImport = async (req, res) => {
           importedDocumentId: String(importedDocument._id),
           fileName: importedDocument.fileName,
           mimeType,
+          storageProvider,
         },
         payload: {
-          upload: { fileName, mimeType, text, fileBase64, sizeBytes },
+          upload: jobUploadPayload,
         },
         priority: /pdf|image/i.test(mimeType) ? 10 : 5,
         maxAttempts: 3,
@@ -147,8 +209,10 @@ export const uploadImport = async (req, res) => {
         processingStatus: "queued",
         jobId: String(job._id),
       };
+
       await importedDocument.save();
       invalidateUserTaxContextCache(req.user.id);
+
       logger.info("upload_import_queued", {
         requestId: req.requestId,
         userId: req.user.id,
@@ -156,7 +220,8 @@ export const uploadImport = async (req, res) => {
         jobId: String(job._id),
         fileName,
         mimeType,
-        sizeBytes,
+        sizeBytes: importedDocument.fileSize || sizeBytes,
+        storageProvider,
         latencyMs: Date.now() - startedAt,
       });
 
@@ -181,7 +246,9 @@ export const uploadImport = async (req, res) => {
       priority: 1,
       maxAttempts: 2,
     });
+
     invalidateUserTaxContextCache(req.user.id);
+
     logger.info("upload_import_processed_sync", {
       requestId: req.requestId,
       userId: req.user.id,
@@ -212,6 +279,7 @@ export const uploadImport = async (req, res) => {
 
 export const createImport = async (req, res) => {
   const startedAt = Date.now();
+
   try {
     const { documentType, fileName, importedAt, detectedSections, totals, extractedFields, auditTrail, rawPreview } =
       req.body || {};
@@ -225,6 +293,9 @@ export const createImport = async (req, res) => {
       documentType: normalizeDocumentType(documentType || fileName),
       fileName: sanitizeText(fileName, 180),
       mimeType: req.body?.mimeType || "",
+      fileSize: Number(req.body?.fileSize || req.body?.sizeBytes || 0),
+      storageProvider: req.body?.storageProvider || "mongo",
+      storageRef: req.body?.storageRef || null,
       importedAt: importedAt ? new Date(importedAt) : new Date(),
       reviewStatus: "extracted",
       detectedSections: Array.isArray(detectedSections) ? detectedSections.map(String) : [],
@@ -248,10 +319,13 @@ export const createImport = async (req, res) => {
       metadata: {
         fileName: importedDocument.fileName,
         documentType: importedDocument.documentType,
+        storageProvider: importedDocument.storageProvider,
         extractedFieldCount: importedDocument.extractedFields.length,
       },
     });
+
     await recordAuditEvents(extractionAuditEvents({ userId: req.user.id, importedDocument }));
+
     await enqueueJob({
       type: "tax_intelligence_recalculation",
       userId: req.user.id,
@@ -259,12 +333,15 @@ export const createImport = async (req, res) => {
       priority: 1,
       maxAttempts: 2,
     });
+
     invalidateUserTaxContextCache(req.user.id);
+
     logger.info("import_created", {
       requestId: req.requestId,
       userId: req.user.id,
       importedDocumentId: String(importedDocument._id),
       fileName: importedDocument.fileName,
+      storageProvider: importedDocument.storageProvider,
       extractedFieldCount: importedDocument.extractedFields.length,
       latencyMs: Date.now() - startedAt,
     });
@@ -284,6 +361,7 @@ export const createImport = async (req, res) => {
 export const listImports = async (req, res) => {
   try {
     const pagination = parsePagination(req.query, { defaultLimit: 25, maxLimit: 100 });
+
     const workspace = await resolveWorkspaceOwner(req, "viewDocuments");
     if (!workspace.allowed) {
       return fail(res, { status: 403, message: "You do not have permission to view these imports" });
@@ -298,6 +376,7 @@ export const listImports = async (req, res) => {
       .skip(pagination.skip)
       .limit(pagination.limit + 1)
       .lean();
+
     const result = pageResult(imports, pagination);
     const serialized = result.items.map((item) => serializeImport(item, { includeAuditTrail: false, includePreview: false }));
 
@@ -320,6 +399,7 @@ export const listImports = async (req, res) => {
       service: "imported documents",
       queryError: sanitizeQueryError(error),
     });
+
     fail(res, {
       status: 500,
       message: "Could not load imported documents from MongoDB.",
@@ -338,6 +418,7 @@ export const reviewImport = async (req, res) => {
   try {
     const { id } = req.params;
     requireObjectId(id);
+
     const { extractedFields, auditTrail } = req.body || {};
 
     const workspace = await resolveWorkspaceOwner(req, "reviewFields");
@@ -424,6 +505,7 @@ export const deleteImport = async (req, res) => {
   try {
     const { id } = req.params;
     requireObjectId(id);
+
     const importedDocument = await ImportedDocument.findOneAndUpdate(
       { _id: id, userId: req.user.id, deletedAt: null },
       { deletedAt: new Date() },
@@ -446,8 +528,10 @@ export const deleteImport = async (req, res) => {
       metadata: {
         fileName: importedDocument.fileName,
         documentType: importedDocument.documentType,
+        storageProvider: importedDocument.storageProvider,
       },
     });
+
     invalidateUserTaxContextCache(req.user.id);
 
     res.status(200).json({

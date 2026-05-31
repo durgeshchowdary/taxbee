@@ -36,9 +36,22 @@ const AuditEntrySchema = new mongoose.Schema(
   { _id: false }
 );
 
+const StorageRefSchema = new mongoose.Schema(
+  {
+    bucket: { type: String, default: "" },
+    key: { type: String, default: "" },
+    region: { type: String, default: "" },
+    contentType: { type: String, default: "" },
+    etag: { type: String, default: "" },
+    uploadedAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const ImportedDocumentSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+
     documentType: {
       type: String,
       enum: [
@@ -56,15 +69,28 @@ const ImportedDocumentSchema = new mongoose.Schema(
       ],
       default: "UNKNOWN",
     },
+
     fileName: { type: String, required: true },
     mimeType: { type: String, default: "" },
+    fileSize: { type: Number, default: 0 },
+
+    storageProvider: {
+      type: String,
+      enum: ["mongo", "s3"],
+      default: "mongo",
+    },
+    storageRef: { type: StorageRefSchema, default: null },
+
     importedAt: { type: Date, default: Date.now },
+
     reviewStatus: {
       type: String,
       enum: ["queued", "processing", "extracted", "confirmed", "overridden", "failed"],
       default: "extracted",
     },
+
     detectedSections: { type: [String], default: [] },
+
     totals: {
       tds: { type: Number, default: 0 },
       interest: { type: Number, default: 0 },
@@ -72,6 +98,7 @@ const ImportedDocumentSchema = new mongoose.Schema(
       salary: { type: Number, default: 0 },
       other: { type: Number, default: 0 },
     },
+
     extractedFields: { type: [ExtractedFieldSchema], default: [] },
     auditTrail: { type: [AuditEntrySchema], default: [] },
     extractedTextPreview: { type: String, default: "" },
@@ -86,6 +113,8 @@ ImportedDocumentSchema.index({ userId: 1, importedAt: -1 });
 ImportedDocumentSchema.index({ userId: 1, deletedAt: 1, importedAt: -1, createdAt: -1 });
 ImportedDocumentSchema.index({ userId: 1, reviewStatus: 1, updatedAt: -1 });
 ImportedDocumentSchema.index({ userId: 1, documentType: 1, importedAt: -1 });
+ImportedDocumentSchema.index({ userId: 1, storageProvider: 1, importedAt: -1 });
+ImportedDocumentSchema.index({ "storageRef.key": 1 });
 
 const ImportedDocument = mongoose.model("ImportedDocument", ImportedDocumentSchema);
 

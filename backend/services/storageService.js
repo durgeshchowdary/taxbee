@@ -15,7 +15,8 @@ const getPrefix = () => env("AWS_S3_UPLOAD_PREFIX", "taxbee-imports");
 
 let cachedClient = null;
 
-export const getStorageProvider = () => env("STORAGE_PROVIDER", "mongo").toLowerCase();
+export const getStorageProvider = () =>
+  env("STORAGE_PROVIDER", "mongo").toLowerCase();
 
 export const shouldUseS3Storage = () => getStorageProvider() === "s3";
 
@@ -154,7 +155,10 @@ export const deleteFromS3 = async ({ storageRef }) => {
   return getS3Client().send(command);
 };
 
-export const generateSignedDownloadUrl = async ({ storageRef, expiresIn = 900 }) => {
+export const generateSignedDownloadUrl = async ({
+  storageRef,
+  expiresIn = 900,
+}) => {
   assertS3Configured();
 
   if (!storageRef?.key) {

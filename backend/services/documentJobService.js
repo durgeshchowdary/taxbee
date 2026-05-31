@@ -4,6 +4,7 @@ import { recordAuditEvent, recordAuditEvents } from "./auditTrailService.js";
 import { logger } from "../utils/safeLogger.js";
 import { invalidateUserTaxContextCache } from "../utils/taxContextService.js";
 import { recordJobMetric } from "./metricsService.js";
+import { downloadBufferFromS3 } from "./storageService.js";
 
 export const extractionAuditEvents = ({ userId, importedDocument }) =>
   (importedDocument.extractedFields || []).map((field) => ({
@@ -88,17 +89,74 @@ const recordOcrFailed = async ({ userId, importedDocumentId, fileName, mimeType,
   });
 };
 
+const resolveUploadPayload = async ({ userId, importedDocumentId, upload }) => {
+  const currentUpload = upload || {};
+
+  if (currentUpload.fileBase64 || currentUpload.text) {
+    return currentUpload;
+  }
+
+  if (!importedDocumentId) {
+    return currentUpload;
+  }
+
+  const importedDocument = await ImportedDocument.findOne({
+    _id: importedDocumentId,
+    userId,
+    deletedAt: null,
+  });
+
+  if (!importedDocument) {
+    const error = new Error("Import placeholder was not found");
+    error.status = 404;
+    throw error;
+  }
+
+  if (importedDocument.storageProvider === "s3" && importedDocument.storageRef?.key) {
+    const buffer = await downloadBufferFromS3({ storageRef: importedDocument.storageRef });
+
+    return {
+      fileName: importedDocument.fileName,
+      mimeType: importedDocument.mimeType || currentUpload.mimeType || "",
+      sizeBytes: importedDocument.fileSize || buffer.length,
+      fileBase64: buffer.toString("base64"),
+      storageProvider: "s3",
+      storageRef: importedDocument.storageRef,
+    };
+  }
+
+  return {
+    fileName: importedDocument.fileName,
+    mimeType: importedDocument.mimeType || currentUpload.mimeType || "",
+    text: currentUpload.text || "",
+    fileBase64: currentUpload.fileBase64 || "",
+    sizeBytes: importedDocument.fileSize || currentUpload.sizeBytes || 0,
+  };
+};
+
 export const processUploadedDocument = async ({ userId, importedDocumentId = null, upload }) => {
-  const { fileName, mimeType = "", text = "", fileBase64 = "" } = upload || {};
+  const resolvedUpload = await resolveUploadPayload({ userId, importedDocumentId, upload });
+
+  const {
+    fileName,
+    mimeType = "",
+    text = "",
+    fileBase64 = "",
+    storageProvider = "mongo",
+  } = resolvedUpload || {};
+
   const startedAt = Date.now();
+
   logger.info("document_extraction_started", {
     userId,
     importedDocumentId,
     fileName,
     mimeType,
     mode: fileBase64 ? "binary" : "text",
+    storageProvider,
     textBytes: Buffer.byteLength(String(text || ""), "utf8"),
   });
+
   if (importedDocumentId) {
     await ImportedDocument.findOneAndUpdate(
       { _id: importedDocumentId, userId, deletedAt: null },
@@ -111,9 +169,11 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
   }
 
   const extracted = await extractDocumentText({ fileName, mimeType, text, fileBase64 });
+
   if (extracted.extractionMetadata?.ocrAttempted) {
     await recordOcrStarted({ userId, importedDocumentId, fileName, mimeType });
   }
+
   logger.info("document_text_extracted", {
     userId,
     importedDocumentId,
@@ -134,6 +194,7 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
       extraction: extracted.extractionMetadata,
       extractionWarnings: extracted.extractionWarnings,
     };
+
     if (extracted.extractionMetadata?.ocrAttempted) {
       await recordOcrFailed({
         userId,
@@ -144,6 +205,7 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
         message: error.message,
       });
     }
+
     throw error;
   }
 
@@ -163,6 +225,7 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
           reviewStatus: "extracted",
           sourceMetadata: {
             ...processed.sourceMetadata,
+            storageProvider,
             processingStatus: "completed",
             processingCompletedAt: new Date(),
           },
@@ -190,6 +253,7 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
       fileName: importedDocument.fileName,
       documentType: importedDocument.documentType,
       mimeType: importedDocument.mimeType,
+      storageProvider: importedDocument.storageProvider,
       extractedFieldCount: importedDocument.extractedFields.length,
       async: Boolean(importedDocumentId),
     },
@@ -209,9 +273,11 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
     importedDocumentId: String(importedDocument._id),
     fileName: importedDocument.fileName,
     documentType: importedDocument.documentType,
+    storageProvider: importedDocument.storageProvider,
     extractedFieldCount: importedDocument.extractedFields.length,
     latencyMs: Date.now() - startedAt,
   });
+
   invalidateUserTaxContextCache(userId);
 
   return importedDocument;
@@ -219,11 +285,13 @@ export const processUploadedDocument = async ({ userId, importedDocumentId = nul
 
 export const markDocumentJobFailed = async ({ importedDocumentId, userId, error }) => {
   if (!importedDocumentId) return null;
+
   logger.warn("document_extraction_failed", {
     userId,
     importedDocumentId,
     failureReason: error?.message || "Document processing failed",
   });
+
   const updated = await ImportedDocument.findOneAndUpdate(
     { _id: importedDocumentId, userId, deletedAt: null },
     {
@@ -237,12 +305,15 @@ export const markDocumentJobFailed = async ({ importedDocumentId, userId, error 
     },
     { new: true }
   );
+
   if (
     error?.sourceMetadata?.extraction?.extractionMode === "ocr_pdf_failed" ||
     error?.sourceMetadata?.extraction?.extractionMode === "ocr_pdf_render_failed"
   ) {
     recordJobMetric({ type: "scanned_pdf_ocr", status: "failed" });
   }
+
   invalidateUserTaxContextCache(userId);
+
   return updated;
 };
