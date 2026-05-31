@@ -11,6 +11,7 @@ import { enqueueJob, serializeJob } from "../services/jobQueueService.js";
 import { extractionAuditEvents, processUploadedDocument } from "../services/documentJobService.js";
 import { invalidateUserTaxContextCache, sanitizeQueryError } from "../utils/taxContextService.js";
 import { pageResult, parsePagination } from "../utils/pagination.js";
+import { syncReviewedFieldsToITRDraft } from "../services/itrDraftSyncService.js";
 
 const normalizeDocumentType = (value = "") => {
   const normalized = String(value).toUpperCase();
@@ -147,7 +148,11 @@ export const uploadImport = async (req, res) => {
         processingStatus: "queued",
         jobId: String(job._id),
       };
-      await importedDocument.save();
+      
+      await syncReviewedFieldsToITRDraft({
+  userKey: workspace.ownerId,
+  importedDocument,
+});
       invalidateUserTaxContextCache(req.user.id);
       logger.info("upload_import_queued", {
         requestId: req.requestId,
