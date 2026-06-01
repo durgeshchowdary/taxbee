@@ -77,8 +77,31 @@ const ImportedDocumentSchema = new mongoose.Schema(
     extractedTextPreview: { type: String, default: "" },
     sourceMetadata: { type: mongoose.Schema.Types.Mixed, default: {} },
     rawPreview: { type: mongoose.Schema.Types.Mixed, default: null },
-    deletedAt: { type: Date, default: null },
-  },
+lifecycleStatus: {
+  type: String,
+  enum: ["active", "soft_deleted", "retention_expired"],
+  default: "active",
+},
+
+deletedAt: { type: Date, default: null },
+
+deletedBy: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: "User",
+  default: null,
+},
+
+restoredAt: { type: Date, default: null },
+
+restoredBy: {
+  type: mongoose.Schema.Types.ObjectId,
+  ref: "User",
+  default: null,
+},
+
+retentionUntil: { type: Date, default: null },
+
+permanentDeleteRequestedAt: { type: Date, default: null },  },
   { timestamps: true }
 );
 

@@ -3,55 +3,125 @@ import { fail } from "../utils/apiResponse.js";
 
 const buckets = new Map();
 
-const rateKey = (req, name) => `${name}:${req.user?.id || req.ip || "unknown"}`;
-const isDevelopment = () => process.env.NODE_ENV === "development";
-
-export const rateLimit = ({ name, windowMs, max }) => (req, res, next) => {
-  const now = Date.now();
-  const key = rateKey(req, name);
-  const bucket = buckets.get(key);
-
-  if (!bucket || bucket.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: now + windowMs });
-    res.setHeader("RateLimit-Limit", String(max));
-    res.setHeader("RateLimit-Remaining", String(Math.max(max - 1, 0)));
-    res.setHeader("RateLimit-Reset", String(Math.ceil((now + windowMs) / 1000)));
-    return next();
-  }
-
-  bucket.count += 1;
-  const remaining = Math.max(max - bucket.count, 0);
-  res.setHeader("RateLimit-Limit", String(max));
-  res.setHeader("RateLimit-Remaining", String(remaining));
-  res.setHeader("RateLimit-Reset", String(Math.ceil(bucket.resetAt / 1000)));
-
-  if (bucket.count > max) {
-    if (isDevelopment()) {
-      console.warn("[RATE LIMIT]", req.ip, req.originalUrl);
-    }
-    res.setHeader("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
-    return fail(res, {
-      status: 429,
-      message: "Too many requests. Please wait and try again.",
-      code: "RATE_LIMITED",
-    });
-  }
-
-  return next();
+const getClientKey = (req, name) => {
+  const userId = req.user?.id || req.user?._id;
+  const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+  return `${name}:${userId || ip}`;
 };
 
-const developmentAuthRateLimit = rateLimit({
-  name: "auth",
-  windowMs: 60 * 1000,
-  max: 10000,
-});
-const productionAuthRateLimit = rateLimit({ name: "auth", windowMs: 15 * 60 * 1000, max: 10 });
+const isDevelopment = () =>
+  process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+const setRateHeaders = (res, { max, remaining, resetAt }) => {
+  res.setHeader("RateLimit-Limit", String(max));
+  res.setHeader("RateLimit-Remaining", String(Math.max(remaining, 0)));
+  res.setHeader("RateLimit-Reset", String(Math.ceil(resetAt / 1000)));
+};
 
-export const authRateLimit = (req, res, next) =>
-  (isDevelopment() ? developmentAuthRateLimit : productionAuthRateLimit)(req, res, next);
-export const aiRateLimit = rateLimit({ name: "ai", windowMs: 60 * 1000, max: 20 });
-export const uploadRateLimit = rateLimit({ name: "upload", windowMs: 10 * 60 * 1000, max: 15 });
-export const apiRateLimit = rateLimit({ name: "api", windowMs: 60 * 1000, max: 300 });
+export const rateLimit = ({ name, windowMs, max, skipInDevelopment = false }) => {
+  return (req, res, next) => {
+    if (skipInDevelopment && isDevelopment()) return next();
+
+    const now = Date.now();
+    const key = getClientKey(req, name);
+    const bucket = buckets.get(key);
+
+    if (!bucket || bucket.resetAt <= now) {
+      const resetAt = now + windowMs;
+      buckets.set(key, { count: 1, resetAt });
+
+      setRateHeaders(res, {
+        max,
+        remaining: max - 1,
+        resetAt,
+      });
+
+      return next();
+    }
+
+    bucket.count += 1;
+
+    setRateHeaders(res, {
+      max,
+      remaining: max - bucket.count,
+      resetAt: bucket.resetAt,
+    });
+
+    if (bucket.count > max) {
+      const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
+      res.setHeader("Retry-After", String(retryAfter));
+
+      if (isDevelopment()) {
+        console.warn("[RATE_LIMIT_BLOCKED]", {
+          name,
+          ip: req.ip,
+          userId: req.user?.id || req.user?._id,
+          path: req.originalUrl,
+          retryAfter,
+        });
+      }
+
+      return fail(res, {
+        status: 429,
+        message: "Too many requests. Please wait and try again.",
+        code: "RATE_LIMITED",
+        data: {
+          limitType: name,
+          retryAfterSeconds: retryAfter,
+        },
+      });
+    }
+
+    return next();
+  };
+};
+
+export const authRateLimit = isDevelopment()
+  ? rateLimit({
+      name: "auth",
+      windowMs: 60 * 1000,
+      max: 10000,
+    })
+  : rateLimit({
+      name: "auth",
+      windowMs: 15 * 60 * 1000,
+      max: 10,
+    });
+
+export const apiRateLimit = isDevelopment()
+  ? rateLimit({
+      name: "api",
+      windowMs: 60 * 1000,
+      max: 10000,
+    })
+  : rateLimit({
+      name: "api",
+      windowMs: 60 * 1000,
+      max: 300,
+    });
+
+export const aiRateLimit = rateLimit({
+  name: "ai",
+  windowMs: 60 * 1000,
+  max: isDevelopment() ? 1000 : 20,
+});
+
+export const uploadRateLimit = rateLimit({
+  name: "upload",
+  windowMs: 10 * 60 * 1000,
+  max: isDevelopment() ? 1000 : 15,
+});
+
+export const beeAssistantRateLimit = rateLimit({
+  name: "bee-assistant",
+  windowMs: 60 * 1000,
+  max: isDevelopment() ? 1000 : 25,
+});
+
+export const documentProcessingRateLimit = rateLimit({
+  name: "document-processing",
+  windowMs: 10 * 60 * 1000,
+  max: isDevelopment() ? 1000 : 10,
+});
 
 export const requestId = (req, res, next) => {
   const id = req.get("X-Request-Id") || crypto.randomUUID();
@@ -68,8 +138,10 @@ export const securityHeaders = (_req, res, next) => {
   res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   res.setHeader("Cross-Origin-Resource-Policy", "same-site");
   res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+
   if (process.env.NODE_ENV === "production") {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   }
+
   return next();
 };

@@ -19,20 +19,29 @@ test("job lifecycle can move queued to processing to completed and clears secure
     attempts: 1,
     maxAttempts: 3,
     inputRef: {},
-    select() {
-      return Promise.resolve(this);
-    },
   };
+
   let completionUpdate;
 
-  mock.method(Job, "findOneAndUpdate", () => processingJob);
+  mock.method(Job.collection, "findOneAndUpdate", async () => ({
+    value: { _id: jobId },
+  }));
+
+  mock.method(Job, "findById", () => ({
+    select() {
+      return Promise.resolve(processingJob);
+    },
+  }));
+
   mock.method(Job, "findByIdAndUpdate", async (_id, update) => {
     completionUpdate = update.$set;
     return { ...processingJob, ...completionUpdate };
   });
 
   const claimed = await claimNextJob({ workerId: "worker-1" });
-  const completed = await completeJob(claimed, { importedDocumentId: "507f1f77bcf86cd799439013" });
+  const completed = await completeJob(claimed, {
+    importedDocumentId: "507f1f77bcf86cd799439013",
+  });
 
   assert.equal(claimed.status, "processing");
   assert.equal(completed.status, "completed");
@@ -45,13 +54,33 @@ test("failed jobs retry before final failure and clear secure payload on final f
   mock.method(AuditEvent, "create", async (payload) => payload);
 
   const updates = [];
+
   mock.method(Job, "findByIdAndUpdate", async (_id, update) => {
     updates.push(update.$set);
     return { _id, ...update.$set };
   });
 
-  await failJob({ _id: jobId, type: "document_extraction", userId, attempts: 1, maxAttempts: 3 }, new Error("temporary"));
-  await failJob({ _id: jobId, type: "document_extraction", userId, attempts: 3, maxAttempts: 3 }, new Error("final"));
+  await failJob(
+    {
+      _id: jobId,
+      type: "document_extraction",
+      userId,
+      attempts: 1,
+      maxAttempts: 3,
+    },
+    new Error("temporary")
+  );
+
+  await failJob(
+    {
+      _id: jobId,
+      type: "document_extraction",
+      userId,
+      attempts: 3,
+      maxAttempts: 3,
+    },
+    new Error("final")
+  );
 
   assert.equal(updates[0].status, "queued");
   assert.equal(updates[0].securePayload, undefined);
