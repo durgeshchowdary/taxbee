@@ -1,46 +1,61 @@
 import {
-  verifyWebhookSignature,
-  processWebhookEvent,
-} from "../services/razorpayWebhookService.js";
+  createWebhook,
+  getWebhooks,
+  disableWebhook,
+} from "../services/webhookService.js";
 
-export const handleRazorpayWebhook = async (req, res, next) => {
+export const create = async (req, res) => {
   try {
-    const signature = req.get("x-razorpay-signature");
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET || "";
+    const webhook = await createWebhook(
+      req.user?.id || req.user?._id,
+      req.body
+    );
 
-    if (!secret) {
-      return res.status(500).json({
-        success: false,
-        message: "Razorpay webhook secret is not configured",
-      });
-    }
-
-    const rawBody = req.rawBody || JSON.stringify(req.body);
-
-    const isValid = verifyWebhookSignature({
-      payload: rawBody,
-      signature,
-      secret,
-    });
-
-    if (!isValid) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid webhook signature",
-      });
-    }
-
-    const result = await processWebhookEvent({
-      eventId: req.body?.id,
-      eventType: req.body?.event,
-      payload: req.body,
-    });
-
-    return res.status(200).json({
+    return res.status(201).json({
       success: true,
-      duplicate: Boolean(result.duplicate),
+      data: webhook,
     });
   } catch (error) {
-    next(error);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+export const getAll = async (req, res) => {
+  try {
+    const webhooks = await getWebhooks(
+      req.user?.id || req.user?._id
+    );
+
+    return res.json({
+      success: true,
+      data: webhooks,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+export const disable = async (req, res) => {
+  try {
+    const webhook = await disableWebhook(
+      req.params.id,
+      req.user?.id || req.user?._id
+    );
+
+    return res.json({
+      success: true,
+      data: webhook,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
   }
 };

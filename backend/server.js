@@ -27,9 +27,10 @@ import notificationRoutes from "./routes/notificationRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import consentRoutes from "./routes/consentRoutes.js";
+import webhookRoutes from "./routes/webhookRoutes.js";
 import disclaimerRoutes from "./routes/disclaimerRoutes.js";
 import reviewWorkflowRoutes from "./routes/reviewWorkflowRoutes.js";
-import webhookRoutes from "./routes/webhookRoutes.js";
+
 import notificationCenterRoutes from "./routes/notificationCenterRoutes.js";
 import monitoringRoutes from "./routes/monitoringRoutes.js";
 import alertRoutes from "./routes/alertRoutes.js";
@@ -78,8 +79,6 @@ logger.info("TaxBee backend config loaded", {
   hasSentryDsn: Boolean(process.env.SENTRY_DSN),
 });
 
-app.disable("x-powered-by");
-app.set("trust proxy", 1);
 
 app.use(requestId);
 app.use(securityHeaders);
