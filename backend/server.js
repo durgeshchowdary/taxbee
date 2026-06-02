@@ -30,9 +30,15 @@ import consentRoutes from "./routes/consentRoutes.js";
 import disclaimerRoutes from "./routes/disclaimerRoutes.js";
 import reviewWorkflowRoutes from "./routes/reviewWorkflowRoutes.js";
 import webhookRoutes from "./routes/webhookRoutes.js";
+import notificationCenterRoutes from "./routes/notificationCenterRoutes.js";
 import monitoringRoutes from "./routes/monitoringRoutes.js";
 import alertRoutes from "./routes/alertRoutes.js";
-
+import apiKeyRoutes from "./routes/apiKeyRoutes.js";
+import backupRoutes from "./routes/backupRoutes.js";
+import featureFlagRoutes from "./routes/featureFlagRoutes.js";
+import usageAnalyticsRoutes from "./routes/usageAnalyticsRoutes.js";
+import supportRoutes from "./routes/supportRoutes.js";
+import adminDashboardRoutes from "./routes/adminDashboardRoutes.js";
 import { errorHandler, notFound } from "./middleware/errorMiddleware.js";
 import { getAllowedOrigins, getMongoUri, validateEnv } from "./utils/env.js";
 import {
@@ -77,6 +83,10 @@ app.set("trust proxy", 1);
 
 app.use(requestId);
 app.use(securityHeaders);
+app.use(
+  "/api/notification-center",
+  notificationCenterRoutes
+);
 
 app.use(
   cors({
@@ -99,6 +109,7 @@ app.use(
 app.use(express.json({ limit: "9mb" }));
 app.use(sanitizeRequestInput);
 app.use(requestLogger);
+app.use("/api/api-keys", apiKeyRoutes);
 app.use("/api", apiRateLimit);
 
 app.get("/", (req, res) => {
@@ -124,7 +135,11 @@ app.use("/api/invoices", invoicePdfRoutes);
 app.use("/api/webhooks", webhookRoutes);
 app.use("/api/monitoring", monitoringRoutes);
 app.use("/api/alerts", alertRoutes);
-
+app.use("/api/backups", backupRoutes);
+app.use("/api/feature-flags", featureFlagRoutes);
+app.use("/api/usage-analytics", usageAnalyticsRoutes);
+app.use("/api/support", supportRoutes);
+app.use("/api/admin-dashboard", adminDashboardRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
