@@ -1,5 +1,6 @@
 import express from "express";
 import { requireAuth } from "../middleware/authMiddleware.js";
+import { requireAnyRole } from "../middleware/rbacMiddleware.js";
 import {
   createTicket,
   getTickets,
@@ -12,8 +13,8 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.post("/tickets", createTicket);
-router.get("/tickets", getTickets);
-router.patch("/tickets/:ticketId", updateTicket);
-router.get("/analytics", getSupportStats);
+router.get("/tickets", requireAnyRole("admin", "internal", "support"), getTickets);
+router.patch("/tickets/:ticketId", requireAnyRole("admin", "internal", "support"), updateTicket);
+router.get("/analytics", requireAnyRole("admin", "internal", "support"), getSupportStats);
 
 export default router;

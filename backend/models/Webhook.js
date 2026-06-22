@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { encryptWebhookSecret, isEncryptedWebhookSecret } from "../services/webhookSignatureService.js";
 
 const WebhookSchema = new mongoose.Schema(
   {
@@ -21,15 +22,23 @@ const WebhookSchema = new mongoose.Schema(
       trim: true,
     },
 
+    events: [
+      {
+        type: String,
+        required: true,
+      },
+    ],
+
     event: {
       type: String,
-      required: true,
-      index: true,
+      select: false,
+      default: undefined,
     },
 
     secret: {
       type: String,
       required: true,
+      select: false,
     },
 
     status: {
@@ -53,6 +62,22 @@ WebhookSchema.index({
   userId: 1,
   status: 1,
   createdAt: -1,
+});
+
+WebhookSchema.index({
+  events: 1,
+  status: 1,
+});
+
+WebhookSchema.index({
+  event: 1,
+  status: 1,
+});
+
+WebhookSchema.pre("validate", function encryptSecret() {
+  if (this.isModified("secret") && this.secret && !isEncryptedWebhookSecret(this.secret)) {
+    this.secret = encryptWebhookSecret(this.secret);
+  }
 });
 
 const Webhook =

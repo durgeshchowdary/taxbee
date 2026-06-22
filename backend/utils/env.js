@@ -18,6 +18,8 @@ const optionalEnv = [
   "WORKER_JOB_TIMEOUT_MS",
   "EMAIL_USER",
   "EMAIL_PASS",
+  "WEBHOOK_SECRET_ENCRYPTION_KEY",
+  "WEBHOOK_SSRF_DNS_LOOKUP",
 
   // Sprint 3 queue config
   "QUEUE_BACKEND",

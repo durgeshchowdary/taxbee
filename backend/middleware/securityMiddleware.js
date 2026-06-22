@@ -75,29 +75,35 @@ export const rateLimit = ({ name, windowMs, max, skipInDevelopment = false }) =>
   };
 };
 
-export const authRateLimit = isDevelopment()
-  ? rateLimit({
-      name: "auth",
-      windowMs: 60 * 1000,
-      max: 10000,
-    })
-  : rateLimit({
-      name: "auth",
-      windowMs: 15 * 60 * 1000,
-      max: 10,
-    });
+const developmentAuthRateLimit = rateLimit({
+  name: "auth-dev",
+  windowMs: 60 * 1000,
+  max: 10000,
+});
 
-export const apiRateLimit = isDevelopment()
-  ? rateLimit({
-      name: "api",
-      windowMs: 60 * 1000,
-      max: 10000,
-    })
-  : rateLimit({
-      name: "api",
-      windowMs: 60 * 1000,
-      max: 300,
-    });
+const productionAuthRateLimit = rateLimit({
+  name: "auth",
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+});
+
+export const authRateLimit = (req, res, next) =>
+  (isDevelopment() ? developmentAuthRateLimit : productionAuthRateLimit)(req, res, next);
+
+const developmentApiRateLimit = rateLimit({
+  name: "api-dev",
+  windowMs: 60 * 1000,
+  max: 10000,
+});
+
+const productionApiRateLimit = rateLimit({
+  name: "api",
+  windowMs: 60 * 1000,
+  max: 300,
+});
+
+export const apiRateLimit = (req, res, next) =>
+  (isDevelopment() ? developmentApiRateLimit : productionApiRateLimit)(req, res, next);
 
 export const aiRateLimit = rateLimit({
   name: "ai",

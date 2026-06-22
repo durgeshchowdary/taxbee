@@ -37,6 +37,7 @@ import alertRoutes from "./routes/alertRoutes.js";
 import apiKeyRoutes from "./routes/apiKeyRoutes.js";
 import backupRoutes from "./routes/backupRoutes.js";
 import featureFlagRoutes from "./routes/featureFlagRoutes.js";
+import filingRoutes from "./routes/filingRoutes.js";
 import usageAnalyticsRoutes from "./routes/usageAnalyticsRoutes.js";
 import supportRoutes from "./routes/supportRoutes.js";
 import adminDashboardRoutes from "./routes/adminDashboardRoutes.js";
@@ -52,6 +53,8 @@ import { requestLogger } from "./middleware/observabilityMiddleware.js";
 import { logger } from "./utils/safeLogger.js";
 import { getHealth } from "./controllers/healthController.js";
 import { initSentry } from "./utils/sentry.js";
+import webhookAnalyticsRoutes
+from "./routes/webhookAnalyticsRoutes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -86,7 +89,10 @@ app.use(
   "/api/notification-center",
   notificationCenterRoutes
 );
-
+app.use(
+  "/api/webhook-analytics",
+  webhookAnalyticsRoutes
+);
 app.use(
   cors({
     origin(origin, callback) {
@@ -136,6 +142,7 @@ app.use("/api/monitoring", monitoringRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/backups", backupRoutes);
 app.use("/api/feature-flags", featureFlagRoutes);
+app.use("/api/filings", filingRoutes);
 app.use("/api/usage-analytics", usageAnalyticsRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/admin-dashboard", adminDashboardRoutes);

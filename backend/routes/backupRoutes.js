@@ -1,5 +1,6 @@
 import express from "express";
 import { requireAuth } from "../middleware/authMiddleware.js";
+import { requireAnyRole } from "../middleware/rbacMiddleware.js";
 import {
   createBackup,
   getBackups,
@@ -10,6 +11,7 @@ import {
 const router = express.Router();
 
 router.use(requireAuth);
+router.use(requireAnyRole("admin", "internal"));
 
 router.post("/", createBackup);
 router.get("/", getBackups);
