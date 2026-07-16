@@ -1,18 +1,20 @@
 const emailQueue = [];
 
-export const queueEmail = async ({ to, subject, html }) => {
-  const emailJob = {
-    id: String(Date.now()),
+export const queueEmail = async ({
+  to,
+  subject,
+  html,
+}) => {
+  emailQueue.push({
+    id: Date.now(),
     to,
     subject,
     html,
     status: "queued",
     createdAt: new Date(),
-  };
+  });
 
-  emailQueue.push(emailJob);
-
-  return emailJob;
+  return true;
 };
 
 export const getQueuedEmails = () => {
@@ -20,25 +22,23 @@ export const getQueuedEmails = () => {
 };
 
 export const processEmailQueue = async () => {
-  const processed = [];
-
   while (emailQueue.length > 0) {
     const email = emailQueue.shift();
 
-    email.status = "sent";
-    email.sentAt = new Date();
+    console.log(
+      `Sending email to ${email.to}: ${email.subject}`
+    );
 
-    processed.push(email);
+    // Future:
+    // await nodemailer.sendMail(...)
   }
 
-  return {
-    processedCount: processed.length,
-    processed,
-  };
+  return true;
 };
 
 export default {
+    
   queueEmail,
-  getQueuedEmails,
   processEmailQueue,
+  getQueuedEmails,
 };

@@ -1,4 +1,4 @@
-﻿export type BeeEmotion = "empathetic" | "cheerful" | "neutral" | "serious";
+export type BeeEmotion = "empathetic" | "cheerful" | "neutral" | "serious";
 
 export const getEmotionStyles = (emotion: BeeEmotion = "neutral") => {
   const base =

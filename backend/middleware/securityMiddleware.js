@@ -1,11 +1,18 @@
 import crypto from "crypto";
 import { fail } from "../utils/apiResponse.js";
+import { logger } from "../utils/safeLogger.js";
+import { recordAuditEvent } from "../services/auditTrailService.js";
 
 const buckets = new Map();
 
+const getClientIp = (req) => {
+  const forwardedFor = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwardedFor || req.ip || "unknown";
+};
+
 const getClientKey = (req, name) => {
   const userId = req.user?.id || req.user?._id;
-  const ip = req.ip || req.headers["x-forwarded-for"] || "unknown";
+  const ip = getClientIp(req);
   return `${name}:${userId || ip}`;
 };
 
@@ -17,9 +24,35 @@ const setRateHeaders = (res, { max, remaining, resetAt }) => {
   res.setHeader("RateLimit-Reset", String(Math.ceil(resetAt / 1000)));
 };
 
-export const rateLimit = ({ name, windowMs, max, skipInDevelopment = false }) => {
+const isPrivilegedUser = (req) => ["admin", "internal"].includes(String(req.user?.role || "").toLowerCase());
+
+const logRateLimitSkip = (req, name, reason) => {
+  logger.info("rate_limit_skipped_reason", {
+    requestId: req.requestId,
+    limitType: name,
+    reason,
+    path: req.originalUrl?.split("?")[0],
+    userId: req.user?.id || req.user?._id || null,
+    role: req.user?.role || null,
+  });
+};
+
+export const rateLimit = ({
+  name,
+  windowMs,
+  max,
+  skipInDevelopment = false,
+  skipPrivileged = false,
+}) => {
   return (req, res, next) => {
-    if (skipInDevelopment && isDevelopment()) return next();
+    if (skipInDevelopment && isDevelopment()) {
+      logRateLimitSkip(req, name, "development");
+      return next();
+    }
+    if (skipPrivileged && isPrivilegedUser(req)) {
+      logRateLimitSkip(req, name, "privileged_role");
+      return next();
+    }
 
     const now = Date.now();
     const key = getClientKey(req, name);
@@ -50,13 +83,30 @@ export const rateLimit = ({ name, windowMs, max, skipInDevelopment = false }) =>
       const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
       res.setHeader("Retry-After", String(retryAfter));
 
-      if (isDevelopment()) {
-        console.warn("[RATE_LIMIT_BLOCKED]", {
-          name,
-          ip: req.ip,
-          userId: req.user?.id || req.user?._id,
-          path: req.originalUrl,
-          retryAfter,
+      logger.warn("rate_limit_hit", {
+        requestId: req.requestId,
+        limitType: name,
+        ip: getClientIp(req),
+        userId: req.user?.id || req.user?._id || null,
+        role: req.user?.role || null,
+        path: req.originalUrl?.split("?")[0],
+        retryAfter,
+      });
+
+      if (req.user?.id || req.user?._id) {
+        void recordAuditEvent({
+          userId: req.user.id || req.user._id,
+          eventType: "RATE_LIMIT_TRIGGERED",
+          entityType: "RateLimit",
+          entityId: name,
+          sourceType: "system",
+          actorType: "system",
+          metadata: {
+            requestId: req.requestId,
+            path: req.originalUrl?.split("?")[0],
+            ip: getClientIp(req),
+            retryAfter,
+          },
         });
       }
 
@@ -100,6 +150,7 @@ const productionApiRateLimit = rateLimit({
   name: "api",
   windowMs: 60 * 1000,
   max: 300,
+  skipPrivileged: true,
 });
 
 export const apiRateLimit = (req, res, next) =>
@@ -127,6 +178,12 @@ export const documentProcessingRateLimit = rateLimit({
   name: "document-processing",
   windowMs: 10 * 60 * 1000,
   max: isDevelopment() ? 1000 : 10,
+});
+
+export const webhookRateLimit = rateLimit({
+  name: "webhook-ip",
+  windowMs: 60 * 1000,
+  max: isDevelopment() ? 1000 : 120,
 });
 
 export const requestId = (req, res, next) => {

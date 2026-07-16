@@ -28,8 +28,10 @@ export const list = async (req, res) => {
 
 export const getOne = async (req, res) => {
   try {
-    const filing = await getFilingById(req.params.id);
-
+const filing = await getFilingById(
+  req.params.id,
+  req.user.id
+);
     if (!filing) {
       return res.status(404).json({ error: "Filing not found" });
     }
@@ -43,9 +45,10 @@ export const getOne = async (req, res) => {
 export const updateStatus = async (req, res) => {
   try {
     const filing = await updateFilingStatus(
-      req.params.id,
-      req.body.filingStatus
-    );
+  req.params.id,
+  req.user.id,
+  req.body.filingStatus
+);
 
     res.json(filing);
   } catch (error) {

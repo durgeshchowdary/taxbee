@@ -40,6 +40,10 @@ const requestToken = (req) => {
 };
 
 export const requireAuth = (req, res, next) => {
+  if (req.authValidated && req.user?.id) {
+    return next();
+  }
+
   const token = requestToken(req);
 
   if (!token) {
@@ -77,6 +81,13 @@ export const requireAuth = (req, res, next) => {
     if (!attachUser(req, payload)) {
       throw new Error("Invalid token payload");
     }
+    req.authValidated = true;
+    logger.info("user_role_context", {
+      requestId: req.requestId,
+      userId: req.user.id,
+      role: req.user.role,
+      route: req.originalUrl?.split("?")[0],
+    });
     return next();
   } catch {
     logger.warn("auth_failure", {
@@ -98,12 +109,23 @@ export const requireAuth = (req, res, next) => {
 };
 
 export const optionalAuth = (req, _res, next) => {
+  if (req.authValidated) return next();
+
   const token = requestToken(req);
 
   if (!token) return next();
 
   try {
     attachUser(req, verifyToken(token));
+    if (req.user?.id) {
+      req.authValidated = true;
+      logger.info("user_role_context", {
+        requestId: req.requestId,
+        userId: req.user.id,
+        role: req.user.role,
+        route: req.originalUrl?.split("?")[0],
+      });
+    }
   } catch {
     req.user = null;
   }

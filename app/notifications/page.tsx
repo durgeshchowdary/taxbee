@@ -1,7 +1,7 @@
 'use client';
 
 import Image from 'next/image';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import BeeAssistantProvider from '@/components/BeeAssistantProvider';
 
@@ -40,7 +40,7 @@ export default function NotificationsPage() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [status, setStatus] = useState('');
 
-  const loadNotifications = async () => {
+  const loadNotifications = useCallback(async () => {
     try {
       const res = await fetch('/api/notifications');
       const data = await res.json();
@@ -51,11 +51,14 @@ export default function NotificationsPage() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Could not load notifications.');
     }
-  };
+  }, []);
 
   useEffect(() => {
-    void loadNotifications();
-  }, []);
+    const timeout = window.setTimeout(() => {
+      void loadNotifications();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [loadNotifications]);
 
   const markRead = async (id: string) => {
     const res = await fetch(`/api/notifications/${encodeURIComponent(id)}/read`, {

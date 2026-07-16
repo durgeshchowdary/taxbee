@@ -7,7 +7,6 @@ import {
   ArrowRight,
   Bot,
   Brain,
-  ChevronRight,
   FileText,
   PiggyBank,
   RotateCcw,
@@ -32,6 +31,7 @@ import {
   isWorkflowBeeAssistantIntent,
   routeBeeAssistantIntent,
   type BeeAssistantIntent,
+  type BeeAssistantIntentRoute,
 } from "@/app/_utils/beeAssistantIntent";
 
 export type Message = {
@@ -42,7 +42,7 @@ export type Message = {
   emotion?: BeeEmotion;
   intent?: string;
   showWorkflow?: boolean;
-  workflowConfig?: any;
+  workflowConfig?: WorkflowConfig;
 };
 
 type AssistantResponse = {
@@ -51,7 +51,7 @@ type AssistantResponse = {
   emotion?: BeeEmotion;
   intent?: string;
   showWorkflow?: boolean;
-  workflowConfig?: any;
+  workflowConfig?: WorkflowConfig;
   memorySummary?: string;
   actions?: AssistantAction[];
   explainability?: Explainability;
@@ -64,6 +64,8 @@ export type BeeAssistantProps = {
   section?: string;
   context?: Record<string, unknown>;
 };
+
+type WorkflowConfig = Record<string, unknown> | null;
 
 export type GuideStep = {
   id: string;
@@ -1167,7 +1169,7 @@ export default function BeeAssistant({
     emotion: BeeEmotion = "neutral",
     intent?: string,
     showWorkflow: boolean = false,
-    workflowConfig: any = null
+    workflowConfig: WorkflowConfig = null
   ) => {
     const assistantMessage: Message = {
       sender: "assistant",
