@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -31,11 +31,7 @@ export default function SettingsPage() {
 
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    loadPreferences();
-  }, []);
-
-  const loadPreferences = async () => {
+  const loadPreferences = useCallback(async () => {
     try {
       const result = await getNotificationPreferences();
 
@@ -45,7 +41,14 @@ export default function SettingsPage() {
     } catch (err) {
       console.error("Failed to load preferences:", err);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void loadPreferences();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [loadPreferences]);
 
   const handleToggle = (key: keyof NotificationPreferences) => {
     setPrefs((prev) => ({

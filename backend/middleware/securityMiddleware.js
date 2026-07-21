@@ -6,7 +6,8 @@ import { recordAuditEvent } from "../services/auditTrailService.js";
 const buckets = new Map();
 
 const getClientIp = (req) => {
-  const forwardedFor = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const headers = req.headers || {};
+  const forwardedFor = String(headers["x-forwarded-for"] || "").split(",")[0].trim();
   return forwardedFor || req.ip || "unknown";
 };
 

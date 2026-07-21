@@ -23,6 +23,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -30,9 +31,12 @@ export default function LoginPage() {
         const session = await loadSession();
         if (session) {
           router.replace(portalPath(session.defaultPortal));
+          return;
         }
       } catch {
         // Keep /login visible even if the backend is offline; login will show errors on submit.
+      } finally {
+        setIsRestoringSession(false);
       }
     };
 
@@ -102,13 +106,23 @@ export default function LoginPage() {
 
       setLoading(false);
       clearLegacyAuthToken();
-      router.push(portalPath(data.data?.defaultPortal || 'taxpayer'));
+      router.replace(portalPath(data.data?.defaultPortal || 'taxpayer'));
     } catch (err) {
       console.error(err);
       setError('Server error. Check backend connection.');
       setLoading(false);
     }
   };
+
+  if (isRestoringSession) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-black via-gray-900 to-yellow-500">
+        <div className="rounded-xl border border-gray-700 bg-gray-900 px-8 py-10 text-center shadow-lg">
+          <p className="text-sm font-semibold text-yellow-300">Checking your session...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-black via-gray-900 to-yellow-500">

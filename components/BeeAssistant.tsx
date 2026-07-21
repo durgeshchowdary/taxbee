@@ -1,22 +1,16 @@
-﻿"use client";
+"use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ArrowRight,
   Bot,
   Brain,
-  FileText,
-  PiggyBank,
   RotateCcw,
   Send,
-  ShieldCheck,
   Sparkles,
-  UploadCloud,
   WandSparkles,
   X,
-  type LucideIcon,
   Loader2,
 } from "lucide-react";
 import { TAXBEE_SITE_MAP, STORAGE_KEYS } from "@/backend/utils/siteMap";
@@ -121,11 +115,6 @@ type SmartSuggestion = {
   value: string;
 };
 
-type WelcomePrompt = {
-  label: string;
-  action: "guide" | "message";
-  value: string;
-};
 
 type Explainability = {
   confidence?: number;
@@ -185,24 +174,6 @@ const MAX_HISTORY_MESSAGES = 40;
 const MAX_AUDIT_ENTRIES = 100;
 const ASSISTANT_TIMEOUT_MS = 40_000;
 
-const quickPromptIconMap: Record<string, LucideIcon> = {
-  "AIS Review": FileText,
-  "Filing Risks": ShieldCheck,
-  "Regime Advice": Brain,
-  "Start Filing": ArrowRight,
-  Deductions: ShieldCheck,
-  Documents: UploadCloud,
-  "Tax Savings": PiggyBank,
-};
-
-const welcomePrompts: WelcomePrompt[] = [
-  { label: "Start Filing", action: "guide", value: "file-itr" },
-  { label: "Upload Form 16", action: "guide", value: "documents" },
-  { label: "Check Deductions", action: "message", value: "Help me check deductions I might be missing." },
-  { label: "Compare Tax Regimes", action: "message", value: "Compare old and new tax regimes for me." },
-  { label: "What can you do?", action: "message", value: "What can you do?" },
-  { label: "Today's Tax Updates", action: "message", value: "What tax updates should I know about today?" },
-];
 
 const panelSpring = {
   type: "spring" as const,
@@ -383,6 +354,67 @@ const readAuditTrail = (): AuditEntry[] => {
   return [];
 };
 
+const readInitialMemoryEnabled = () => {
+  if (typeof window === "undefined") return true;
+  return localStorage.getItem(STORAGE_KEYS.MEMORY_ENABLED) !== "false";
+};
+
+const readInitialMessages = () => {
+  if (typeof window === "undefined") return INITIAL_MESSAGES;
+
+  try {
+    const memoryEnabled = readInitialMemoryEnabled();
+    const savedMessages = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY);
+    if (memoryEnabled && savedMessages) {
+      const parsedMessages = JSON.parse(savedMessages) as Message[];
+      if (Array.isArray(parsedMessages)) {
+        return parsedMessages.slice(-MAX_STORED_MESSAGES);
+      }
+    }
+
+    const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
+    if (savedUser) {
+      const user = JSON.parse(savedUser) as { name?: string };
+      if (user?.name) {
+        return [
+          {
+            sender: "assistant" as const,
+            text: `Hi ${user.name}, I'm Bee Assistant. I can guide you through filing your ITR step by step.`,
+          },
+        ];
+      }
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
+  }
+
+  return INITIAL_MESSAGES;
+};
+
+const readInitialWorkflow = () => {
+  if (typeof window === "undefined") return { activeGuideId: null, activeStepIndex: null };
+
+  try {
+    const savedWorkflow = localStorage.getItem(STORAGE_KEYS.WORKFLOW);
+    if (!savedWorkflow) return { activeGuideId: null, activeStepIndex: null };
+
+    const parsed = JSON.parse(savedWorkflow) as {
+      activeGuideId?: string;
+      activeStepIndex?: number;
+    };
+
+    if (parsed.activeGuideId && typeof parsed.activeStepIndex === "number") {
+      return {
+        activeGuideId: parsed.activeGuideId,
+        activeStepIndex: parsed.activeStepIndex,
+      };
+    }
+  } catch {
+    localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
+  }
+
+  return { activeGuideId: null, activeStepIndex: null };
+};
 const findGuideForMessage = (message: string) => {
   const queryTokens = tokenize(message);
   if (queryTokens.length === 0) return null;
@@ -533,14 +565,13 @@ export default function BeeAssistant({
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [storedContext, setStoredContext] = useState<Record<string, unknown>>({});
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
-  const [activeGuideId, setActiveGuideId] = useState<string | null>(null);
-  const [activeStepIndex, setActiveStepIndex] = useState<number | null>(null);
+  const [messages, setMessages] = useState<Message[]>(readInitialMessages);
+  const [activeGuideId, setActiveGuideId] = useState<string | null>(() => readInitialWorkflow().activeGuideId);
+  const [activeStepIndex, setActiveStepIndex] = useState<number | null>(() => readInitialWorkflow().activeStepIndex);
   const [pendingActions, setPendingActions] = useState<AssistantAction[]>([]);
-  const [auditTrail, setAuditTrail] = useState<AuditEntry[]>([]);
-  const [memoryEnabled, setMemoryEnabled] = useState(true);
-  const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(null);
-  const [conversationMode, setConversationMode] = useState<"welcome" | "chat" | "workflow">("welcome");
+  const [auditTrail, setAuditTrail] = useState<AuditEntry[]>(readAuditTrail);
+  const [memoryEnabled, setMemoryEnabled] = useState(readInitialMemoryEnabled);
+  const [, setConversationMode] = useState<"welcome" | "chat" | "workflow">("welcome");
   const [assistantStatus, setAssistantStatus] = useState<"ready" | "degraded">(
     "ready"
   );
@@ -550,54 +581,6 @@ export default function BeeAssistant({
   const [displayedText, setDisplayedText] = useState<Record<number, string>>({});
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    try {
-      const savedMemoryPreference = localStorage.getItem(STORAGE_KEYS.MEMORY_ENABLED);
-      const nextMemoryEnabled = savedMemoryPreference !== "false";
-      setMemoryEnabled(nextMemoryEnabled);
-
-      const savedMessages = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY);
-      if (nextMemoryEnabled && savedMessages) {
-        const parsedMessages = JSON.parse(savedMessages || "[]") as Message[];
-        if (Array.isArray(parsedMessages)) {
-          setMessages(parsedMessages.slice(-MAX_STORED_MESSAGES));
-        }
-      } else {
-        // Personalized welcome for new chat sessions
-        const savedUser = localStorage.getItem(STORAGE_KEYS.USER);
-        if (savedUser) {
-          try {
-            const user = JSON.parse(savedUser);
-            if (user && user.name) {
-              setMessages([{
-                sender: "assistant",
-                text: `Hi ${user.name}, I'm Bee Assistant. I can guide you through filing your ITR step by step.`
-              }]);
-            }
-          } catch {
-            // Silent fallback to default greeting if parsing fails
-          }
-        }
-      }
-
-      const savedWorkflow = localStorage.getItem(STORAGE_KEYS.WORKFLOW);
-      if (savedWorkflow) {
-        const parsed = JSON.parse(savedWorkflow) as {
-          activeGuideId?: string;
-          activeStepIndex?: number;
-        };
-        if (parsed.activeGuideId && typeof parsed.activeStepIndex === "number") {
-          setActiveGuideId(parsed.activeGuideId);
-          setActiveStepIndex(parsed.activeStepIndex);
-        }
-      }
-
-      setAuditTrail(readAuditTrail());
-    } catch {
-      localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
-      localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
-    }
-  }, []);
 
   useEffect(() => {
     try {
@@ -677,21 +660,6 @@ export default function BeeAssistant({
     return () => window.removeEventListener("taxbee:storage-updated", refreshContext);
   }, [isOpen, pathname]);
 
-  // Proactive section-based help
-  useEffect(() => {
-    if (isOpen && section && section !== "global") {
-      const sectionKey = `proactive_greeted_${section}`;
-      const hasBeenGreeted = sessionStorage.getItem(sectionKey);
-
-      if (!hasBeenGreeted) {
-        const pageName = TAXBEE_SITE_MAP.find(p => p.route === pathname)?.title || section;
-        addAssistantMessage(
-          `I see you're on the ${pageName} page. I'm specialized in Indian taxes ðŸ Let me help you with the specific rules or calculations for this section!`
-        );
-        sessionStorage.setItem(sectionKey, "true");
-      }
-    }
-  }, [isOpen, section, pathname]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1125,7 +1093,7 @@ export default function BeeAssistant({
     
     let intent = classifyBeeAssistantIntent(message);
     if (casualPhrases.some(p => normalized.includes(p))) {
-      intent = "small_talk" as any;
+      intent = "small_talk";
     }
     if (!isLocalBeeAssistantIntent(intent)) return null;
 
@@ -1144,7 +1112,7 @@ export default function BeeAssistant({
     return replies[intent] || null;
   };
 
-  const runTypewriter = (index: number, fullText: string) => {
+  const runTypewriter = useCallback((index: number, fullText: string) => {
     setTypingMessageId(index);
     let currentText = "";
     const parts = fullText.split(/(\s+)/);
@@ -1160,9 +1128,9 @@ export default function BeeAssistant({
         setTypingMessageId(null);
       }
     }, 35);
-  };
+  }, []);
 
-  const addAssistantMessage = (
+  const addAssistantMessage = useCallback((
     text: string,
     guideOfferId?: string,
     explainability?: Explainability,
@@ -1188,9 +1156,27 @@ export default function BeeAssistant({
       setTimeout(() => runTypewriter(index, text), 50);
       return newMessages;
     });
-  };
+  }, [runTypewriter]);
 
-  const applyAction = async (action: AssistantAction) => {
+  useEffect(() => {
+    if (isOpen && section && section !== "global") {
+      const sectionKey = `proactive_greeted_${section}`;
+      const hasBeenGreeted = sessionStorage.getItem(sectionKey);
+
+      if (!hasBeenGreeted) {
+        const pageName = TAXBEE_SITE_MAP.find((page) => page.route === pathname)?.title || section;
+        const timeout = window.setTimeout(() => {
+          addAssistantMessage(
+            `I see you're on the ${pageName} page. I'm specialized in Indian taxes. Let me help you with the specific rules or calculations for this section!`
+          );
+        }, 0);
+        sessionStorage.setItem(sectionKey, "true");
+        return () => window.clearTimeout(timeout);
+      }
+    }
+  }, [addAssistantMessage, isOpen, pathname, section]);
+
+  const applyAction = useCallback(async (action: AssistantAction) => {
     if (action.type === "set_local_storage") {
       try {
         const { oldValue } = await saveAssistantFieldToMongo(action);
@@ -1259,7 +1245,7 @@ export default function BeeAssistant({
         addAssistantMessage("I could not create that reviewer comment. No local-only comment was saved.");
       }
     }
-  };
+  }, [addAssistantMessage, auditTrail, pathname, router]);
 
   const executeActions = (actions: AssistantAction[] = [], sourceMessage = "") => {
     const safeActions = actions.filter(
@@ -1461,14 +1447,13 @@ export default function BeeAssistant({
 
     setMessages(nextMessages);
     setInput("");
-    setLastFailedMessage(null);
 
     const normalized = userMessage.toLowerCase();
     const casualPhrases = ["what's up", "whats up", "sup", "how is your day", "how are you", "how are you doing"];
     
     let intentRoute = routeBeeAssistantIntent(userMessage);
     if (casualPhrases.some(p => normalized.includes(p))) {
-      intentRoute = { intent: "small_talk", handling: "local" } as any;
+      intentRoute = { intent: "small_talk", handling: "local" } satisfies BeeAssistantIntentRoute;
     }
     const { intent } = intentRoute;
 
@@ -1542,7 +1527,6 @@ export default function BeeAssistant({
         };
       }
       if (!res.ok || data.retryable) {
-        setLastFailedMessage(userMessage);
       }
 
       if (memoryEnabled && typeof data.memorySummary === "string") {
@@ -1567,7 +1551,6 @@ export default function BeeAssistant({
     } catch (error) {
       console.error("Bee Assistant error:", error);
       setAssistantStatus("degraded");
-      setLastFailedMessage(userMessage);
       addAssistantMessage(
         error instanceof Error && error.name === "AbortError"
           ? "Bee Assistant took too long to respond. Your message is saved here, so you can retry."
@@ -1613,7 +1596,7 @@ export default function BeeAssistant({
           )}
           {states && (
             <span className="rounded-full border border-cyan-100 bg-cyan-50 px-2 py-0.5 text-cyan-800">
-              {states.confirmed || 0} confirmed Â· {states.extracted || 0} extracted Â· {states.overridden || 0} overridden
+              {states.confirmed || 0} confirmed · {states.extracted || 0} extracted · {states.overridden || 0} overridden
             </span>
           )}
         </div>
@@ -1640,36 +1623,6 @@ export default function BeeAssistant({
     localStorage.removeItem(STORAGE_KEYS.WORKFLOW);
   };
 
-  const quickPrompts = [
-    {
-      label: "AIS Review",
-      text: "Run an AIS review and explain what was mapped into each income head.",
-    },
-    {
-      label: "Filing Risks",
-      text: "Run a filing error detector on my AIS import and ITR draft.",
-    },
-    {
-      label: "Regime Advice",
-      text: "Compare old and new tax regimes using my saved draft and deductions.",
-    },
-    {
-      label: "Start Filing",
-      text: "Help me file my ITR step by step.",
-    },
-    {
-      label: "Deductions",
-      text: "Guide me to claim deductions.",
-    },
-    {
-      label: "Documents",
-      text: "Guide me to upload documents.",
-    },
-    {
-      label: "Tax Savings",
-      text: "Show me tax savings options.",
-    },
-  ];
 
   const activeGuide = getActiveGuide();
   const activeStep =
@@ -1677,12 +1630,6 @@ export default function BeeAssistant({
       ? null
       : activeGuide.steps[activeStepIndex];
   const hasUserMessages = messages.some((message) => message.sender === "user");
-  const hasActiveAssistantWork =
-    Boolean(activeStep) ||
-    hasUserMessages ||
-    pendingActions.length > 0 ||
-    Boolean(lastFailedMessage) ||
-    loading;
   const dismissGuideOffer = (messageIndex: number) => {
     setMessages((prev) =>
       prev.map((message, index) =>

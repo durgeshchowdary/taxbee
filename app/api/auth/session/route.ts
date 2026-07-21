@@ -1,18 +1,11 @@
-import { NextResponse } from "next/server";
+import { authForwardHeaders, BACKEND_URL, readBackendJson } from "@/app/api/_utils/backend";
+import { NextRequest, NextResponse } from "next/server";
 
-const BACKEND_URL =
-  process.env.BACKEND_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  "http://localhost:5000";
-
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const cookie = request.headers.get("cookie") || "";
-
     const backendResponse = await fetch(`${BACKEND_URL}/api/auth/session`, {
-      method: "GET",
       headers: {
-        cookie,
+        ...authForwardHeaders(request),
         accept: "application/json",
       },
       cache: "no-store",

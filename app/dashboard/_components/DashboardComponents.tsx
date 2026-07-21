@@ -7,6 +7,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
   CheckCircle2,
+  ChevronRight,
   Circle,
   ClipboardList,
   FileText,
@@ -14,11 +15,13 @@ import {
   HelpCircle,
   Import,
   Lock,
+  Menu,
   PiggyBank,
   ShieldAlert,
   Sparkles,
+  User as UserIcon,
 } from "lucide-react";
-import type { ActivityItem, FilingStep, User } from "../_hooks/useTaxDashboardData";
+import type { ActivityItem, FilingStep, User as DashboardUser } from "../_hooks/useTaxDashboardData";
 
 type NavItem = {
   icon: LucideIcon;
@@ -26,7 +29,7 @@ type NavItem = {
   route: string;
 };
 
-export const sidebarItems: NavItem[] = [
+export const sidebarItemsDefault: NavItem[] = [
   { icon: BarChart3, label: "Dashboard", route: "/dashboard" },
   { icon: FileText, label: "File Tax", route: "/file-tax" },
   { icon: PiggyBank, label: "Tax Savings", route: "/tax-savings" },
@@ -40,17 +43,70 @@ export function DashboardShell({
   onLogout,
   children,
 }: {
-  user: User;
+  user: DashboardUser;
   onLogout: () => void;
   children: ReactNode;
 }) {
+  return (
+    <WorkspaceShell
+      title="Dashboard"
+      subtitle="A unified workspace for filing, documents, savings, and insights."
+      user={user}
+      onLogout={onLogout}
+    >
+      {children}
+    </WorkspaceShell>
+  );
+}
+
+export type WorkspaceNavItem = {
+  icon: LucideIcon;
+  label: string;
+  route: string;
+};
+
+export type WorkspaceShellProps = {
+  title?: string;
+  subtitle?: string;
+  actions?: ReactNode;
+  breadcrumbs?: Array<{ label: string; href?: string }>;
+  sidebarItems?: WorkspaceNavItem[];
+  sidebarTitle?: string;
+  sidebarSubtitle?: string;
+  user?: { name?: string };
+  onLogout?: () => void;
+  search?: ReactNode;
+  headerRight?: ReactNode;
+  footer?: ReactNode;
+  children: ReactNode;
+};
+
+export function WorkspaceShell({
+  title,
+  subtitle,
+  actions,
+  breadcrumbs,
+  sidebarItems,
+  sidebarTitle,
+  sidebarSubtitle,
+  user,
+  onLogout,
+  search,
+  headerRight,
+  footer,
+  children,
+}: WorkspaceShellProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const normalizedPathname = pathname?.replace(/\/+$/, "") || "/";
+  const effectiveSidebarItems = sidebarItems ?? sidebarItemsDefault;
+  const effectiveSidebarTitle = sidebarTitle ?? "TaxBee";
+  const effectiveSidebarSubtitle = sidebarSubtitle ?? "Personal tax workspace";
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-gray-700 lg:flex">
       <aside className="fixed inset-x-0 top-0 z-30 border-b border-white/10 bg-[#0f172a] px-4 py-3 text-white lg:inset-y-0 lg:left-0 lg:w-64 lg:border-b-0 lg:border-r lg:border-gray-800 lg:px-4 lg:py-5">
-        <div className="flex items-center gap-3 lg:mb-7">
+        <div className="flex items-center justify-between gap-3 lg:mb-7">
           <button
             onClick={() => router.push("/dashboard")}
             className="flex min-w-0 items-center gap-3 rounded-2xl p-2 text-left transition hover:bg-white/10 lg:w-full lg:bg-white/5 lg:p-3 lg:ring-1 lg:ring-white/10"
@@ -66,16 +122,24 @@ export function DashboardShell({
               />
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-lg font-bold text-white">TaxBee</span>
-              <span className="hidden text-sm font-semibold text-gray-400 sm:block">Personal tax workspace</span>
+              <span className="block truncate text-lg font-bold text-white">{effectiveSidebarTitle}</span>
+              <span className="hidden text-sm font-semibold text-gray-400 sm:block">{effectiveSidebarSubtitle}</span>
             </span>
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 p-2 text-white transition hover:bg-white/10 lg:hidden"
+            onClick={() => router.push("/dashboard")}
+            aria-label="Open navigation"
+          >
+            <Menu className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
 
         <nav className="mt-3 flex gap-1 overflow-x-auto pb-1 lg:mt-0 lg:flex-col lg:overflow-visible lg:pb-0">
-          {sidebarItems.map((item) => {
+          {effectiveSidebarItems.map((item) => {
             const Icon = item.icon;
-            const isActive = pathname === item.route;
+            const isActive = normalizedPathname === item.route;
             return (
               <button
                 key={item.label}
@@ -93,20 +157,66 @@ export function DashboardShell({
           })}
         </nav>
 
-        <div className="mt-5 hidden rounded-2xl border border-white/10 bg-white/5 p-3 lg:block">
-          <p className="text-sm font-semibold text-gray-400">Signed in</p>
-          <p className="mt-1 truncate text-sm font-bold text-white">{user.name || "TaxBee user"}</p>
-          <button
-            onClick={onLogout}
-            className="mt-3 w-full rounded-xl border border-red-400/20 px-3 py-2 text-left text-sm font-semibold text-red-300 transition hover:bg-white/10"
-          >
-            Logout
-          </button>
+        <div className="mt-6 hidden rounded-2xl border border-white/10 bg-white/5 p-3 lg:block">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white">
+              <UserIcon className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-gray-300">{user?.name || "Guest"}</p>
+              <p className="text-xs text-gray-500">Workspace member</p>
+            </div>
+          </div>
+          {onLogout ? (
+            <button
+              onClick={onLogout}
+              className="mt-3 w-full rounded-xl border border-red-400/20 px-3 py-2 text-left text-sm font-semibold text-red-300 transition hover:bg-white/10"
+            >
+              Logout
+            </button>
+          ) : null}
         </div>
       </aside>
 
       <main className="w-full px-4 pb-8 pt-36 sm:px-6 lg:ml-64 lg:px-8 lg:pt-8">
-        <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">{children}</div>
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
+          <header className="grid gap-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                {title && <h1 className="text-3xl font-bold text-gray-900">{title}</h1>}
+                {subtitle && <p className="mt-2 text-sm leading-6 text-gray-600">{subtitle}</p>}
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                {search && <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">{search}</div>}`r`n                {actions}`r`n                {headerRight}
+              </div>
+            </div>
+
+            {breadcrumbs ? (
+              <nav className="flex flex-wrap items-center gap-2 text-sm text-slate-500" aria-label="Breadcrumb">
+                {breadcrumbs.map((crumb, index) => (
+                  <span key={`${crumb.label}-${index}`} className="inline-flex items-center gap-2">
+                    {crumb.href ? (
+                      <button
+                        type="button"
+                        className="text-slate-500 transition hover:text-slate-700"
+                        onClick={() => crumb.href && router.push(crumb.href)}
+                      >
+                        {crumb.label}
+                      </button>
+                    ) : (
+                      <span>{crumb.label}</span>
+                    )}
+                    {index < breadcrumbs.length - 1 ? <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" /> : null}
+                  </span>
+                ))}
+              </nav>
+            ) : null}
+          </header>
+
+          {children}
+
+          {footer ? <footer>{footer}</footer> : null}
+        </div>
       </main>
     </div>
   );

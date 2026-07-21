@@ -8,27 +8,23 @@ export interface NotificationPreferences {
   productUpdates: boolean;
 }
 
-export const getNotificationPreferences = async () => {
-  const res = await apiFetch(
-    `${process.env.NEXT_PUBLIC_API_URL}/api/notification-preferences`
-  );
+const endpoint = "/api/notification-preferences";
 
+export const getNotificationPreferences = async () => {
+  const res = await apiFetch(endpoint);
   return res.json();
 };
 
 export const updateNotificationPreferences = async (
   data: NotificationPreferences
 ) => {
-  const res = await apiFetch(
-    `${process.env.NEXT_PUBLIC_API_URL}/api/notification-preferences`,
-    {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(data),
-    }
-  );
+  const res = await apiFetch(endpoint, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
+  });
 
   return res.json();
 };
