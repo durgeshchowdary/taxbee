@@ -112,7 +112,7 @@ export default function VerifyEmailPage() {
       window.sessionStorage.removeItem("pendingVerificationEmail");
       window.sessionStorage.removeItem("pendingVerificationMessage");
       window.sessionStorage.removeItem("pendingVerificationDevOtp");
-      clearLegacyAuthToken();`r`n      if (data.data?.user) {`r`n        setSessionSnapshot(data.data as SessionData);`r`n        notifyAuthChanged();`r`n      }`r`n      router.replace(portalPath(data.data?.defaultPortal || "taxpayer"));
+      clearLegacyAuthToken();      if (data.data?.user) {        setSessionSnapshot(data.data as SessionData);       notifyAuthChanged();     }      router.replace(portalPath(data.data?.defaultPortal || "taxpayer"));
     } catch (err) {
       console.error(err);
       setError("Server error. Check backend connection.");
