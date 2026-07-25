@@ -1,13 +1,13 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { loadSession, portalPath } from '@/app/_utils/authSession';
+import { loadSession, notifyAuthChanged, portalPath, setSessionSnapshot, type SessionData } from '@/app/_utils/authSession';
 import { clearLegacyAuthToken } from '@/app/_utils/authClient';
 
 type LoginResponse = {
   user?: unknown;
-  data?: {
+  data?: Partial<SessionData> & {
     defaultPortal?: "taxpayer" | "reviewer" | "admin" | "verify-email";
     requiresVerification?: boolean;
     emailDelivery?: { message?: string };
@@ -106,6 +106,10 @@ export default function LoginPage() {
 
       setLoading(false);
       clearLegacyAuthToken();
+      if (data.data?.user) {
+        setSessionSnapshot(data.data as SessionData);
+        notifyAuthChanged();
+      }
       router.replace(portalPath(data.data?.defaultPortal || 'taxpayer'));
     } catch (err) {
       console.error(err);
@@ -187,3 +191,6 @@ export default function LoginPage() {
     </div>
   );
 }
+
+
+

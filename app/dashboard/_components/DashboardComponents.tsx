@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
@@ -21,6 +21,8 @@ import {
   Sparkles,
   User as UserIcon,
 } from "lucide-react";
+import { useAuth } from "@/app/_contexts/AuthContext";
+import type { SessionUser } from "@/app/_utils/authSession";
 import type { ActivityItem, FilingStep, User as DashboardUser } from "../_hooks/useTaxDashboardData";
 
 type NavItem = {
@@ -73,7 +75,7 @@ export type WorkspaceShellProps = {
   sidebarItems?: WorkspaceNavItem[];
   sidebarTitle?: string;
   sidebarSubtitle?: string;
-  user?: { name?: string };
+  user?: Partial<SessionUser>;
   onLogout?: () => void;
   search?: ReactNode;
   headerRight?: ReactNode;
@@ -102,6 +104,11 @@ export function WorkspaceShell({
   const effectiveSidebarItems = sidebarItems ?? sidebarItemsDefault;
   const effectiveSidebarTitle = sidebarTitle ?? "TaxBee";
   const effectiveSidebarSubtitle = sidebarSubtitle ?? "Personal tax workspace";
+  const auth = useAuth();
+  const shellUser = user ?? auth.user ?? undefined;
+  const displayName = shellUser?.name || (auth.status === "loading" ? "Loading..." : "User");
+  const displayEmail = shellUser?.email || (auth.status === "loading" ? "Checking session" : "Signed in");
+  const workspaceLabel = shellUser?.role ? `${shellUser.role.charAt(0).toUpperCase()}${shellUser.role.slice(1)} workspace` : "TaxBee workspace";
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-gray-700 lg:flex">
@@ -163,8 +170,9 @@ export function WorkspaceShell({
               <UserIcon className="h-4 w-4" aria-hidden="true" />
             </span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-gray-300">{user?.name || "Guest"}</p>
-              <p className="text-xs text-gray-500">Workspace member</p>
+              <p className="truncate text-sm font-semibold text-gray-300">{displayName}</p>
+              <p className="truncate text-xs text-gray-500">{displayEmail}</p>
+              <p className="truncate text-xs text-gray-500">{workspaceLabel}</p>
             </div>
           </div>
           {onLogout ? (
@@ -187,7 +195,9 @@ export function WorkspaceShell({
                 {subtitle && <p className="mt-2 text-sm leading-6 text-gray-600">{subtitle}</p>}
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                {search && <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">{search}</div>}`r`n                {actions}`r`n                {headerRight}
+                {search && <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">{search}</div>}
+                {actions}
+                {headerRight}
               </div>
             </div>
 
@@ -521,3 +531,5 @@ export function InsightsPreview({
     </PageSection>
   );
 }
+
+

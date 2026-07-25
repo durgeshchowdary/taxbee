@@ -1,10 +1,10 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STORAGE_KEYS } from "@/backend/utils/siteMap";
 import { analyzeTaxContext, buildTaxIntelligence } from "@/backend/utils/taxEngine";
-import { loadSession, logoutSession } from "@/app/_utils/authSession";
+import { useAuth } from "@/app/_contexts/AuthContext";
 
 export type User = {
   name: string;
@@ -258,6 +258,7 @@ const EMPTY_DASHBOARD_MESSAGE = "Import documents or start your ITR draft to beg
 
 export function useTaxDashboardData() {
   const router = useRouter();
+  const auth = useAuth();
   const [isInitializing, setIsInitializing] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [dashboardError, setDashboardError] = useState("");
@@ -272,11 +273,19 @@ export function useTaxDashboardData() {
   const [calculationStatusReason, setCalculationStatusReason] = useState("");
 
   useEffect(() => {
+    if (auth.status === "loading") {
+      setIsInitializing(true);
+      return;
+    }
+
     const calculateTax = async () => {
       try {
-        const session = await loadSession();
+        if (auth.status === "loading") return;
+
+        const session = auth.session;
         if (!session) {
           setUser(null);
+          router.replace("/login");
           return;
         }
         if (session.requiresVerification) {
@@ -368,17 +377,12 @@ export function useTaxDashboardData() {
     calculateTax();
     window.addEventListener("taxbee:storage-updated", calculateTax);
     return () => window.removeEventListener("taxbee:storage-updated", calculateTax);
-  }, [router]);
+  }, [auth.session, auth.status, router]);
 
-  useEffect(() => {
-    if (!isInitializing && !user) {
-      router.push("/login");
-    }
-  }, [user, isInitializing, router]);
 
   const handleLogout = () => {
     localStorage.removeItem(STORAGE_KEYS.USER);
-    void logoutSession();
+    void auth.signOut();
     setUser(null);
     setVerifiedPan(null);
     router.push("/login");
@@ -629,3 +633,8 @@ export function useTaxDashboardData() {
     documentRows,
   };
 }
+
+
+
+
+

@@ -1,36 +1,25 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { loadSession } from "@/app/_utils/authSession";
-import type { SessionData } from "@/app/_utils/authSession";
+import { useAuth } from "@/app/_contexts/AuthContext";
 
 export function useProtectedSession() {
   const router = useRouter();
-  const [session, setSession] = useState<SessionData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const auth = useAuth();
 
   useEffect(() => {
-    let active = true;
+    if (auth.status === "unauthenticated") {
+      router.replace("/login");
+    }
+  }, [auth.status, router]);
 
-    const restoreSession = async () => {
-      const data = await loadSession();
-      if (!active) return;
-
-      if (!data) {
-        router.replace("/login");
-        return;
-      }
-
-      setSession(data);
-      setIsLoading(false);
-    };
-
-    void restoreSession();
-    return () => {
-      active = false;
-    };
-  }, [router]);
-
-  return { session, isLoading };
+  return {
+    session: auth.session,
+    isLoading: auth.status === "loading",
+    status: auth.status,
+    user: auth.user,
+    refreshSession: auth.refreshSession,
+    signOut: auth.signOut,
+  };
 }

@@ -1,4 +1,4 @@
-import type { NextRequest } from "next/server";
+﻿import type { NextRequest } from "next/server";
 import { handleProtectedRoute } from "./lib/auth/routeGuard";
 
 export const config = {
@@ -22,3 +22,4 @@ export const config = {
 export function middleware(request: NextRequest) {
   return handleProtectedRoute(request);
 }
+

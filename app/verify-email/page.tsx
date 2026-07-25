@@ -1,12 +1,12 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { logoutSession, portalPath } from "@/app/_utils/authSession";
+import { logoutSession, notifyAuthChanged, portalPath, setSessionSnapshot, type SessionData } from "@/app/_utils/authSession";
 import { clearLegacyAuthToken } from "@/app/_utils/authClient";
 
 type VerifyResponse = {
-  data?: {
+  data?: Partial<SessionData> & {
     defaultPortal?: "taxpayer" | "reviewer" | "admin" | "verify-email";
     devOtp?: string;
     emailDelivery?: { message?: string };
@@ -112,8 +112,7 @@ export default function VerifyEmailPage() {
       window.sessionStorage.removeItem("pendingVerificationEmail");
       window.sessionStorage.removeItem("pendingVerificationMessage");
       window.sessionStorage.removeItem("pendingVerificationDevOtp");
-      clearLegacyAuthToken();
-      router.replace(portalPath(data.data?.defaultPortal || "taxpayer"));
+      clearLegacyAuthToken();`r`n      if (data.data?.user) {`r`n        setSessionSnapshot(data.data as SessionData);`r`n        notifyAuthChanged();`r`n      }`r`n      router.replace(portalPath(data.data?.defaultPortal || "taxpayer"));
     } catch (err) {
       console.error(err);
       setError("Server error. Check backend connection.");
@@ -188,3 +187,4 @@ export default function VerifyEmailPage() {
     </main>
   );
 }
+

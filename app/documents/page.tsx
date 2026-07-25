@@ -1,9 +1,11 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import BeeAssistantProvider from '@/components/BeeAssistantProvider';
-import { WorkspaceShell } from '@/app/dashboard/_components/DashboardComponents';
+import { LoadingDashboard, WorkspaceShell } from '@/app/dashboard/_components/DashboardComponents';
+import { useProtectedSession } from '@/app/_hooks/useProtectedSession';
+import { apiFetch } from '@/app/_utils/authClient';
 import { statusForTaxLoadFailure } from '@/app/_utils/taxStatus';
 
 type ExtractionReviewRecord = {
@@ -28,14 +30,17 @@ const formatMoney = (value: number) =>
 
 export default function DocumentsPage() {
   const router = useRouter();
+  const { session, isLoading, signOut } = useProtectedSession();
   const [aisImport, setAisImport] = useState<AisImport>(null);
   const [records, setRecords] = useState<ExtractionReviewRecord[]>([]);
   const [status, setStatus] = useState('');
 
   useEffect(() => {
+    if (!session) return;
+
     const refresh = async () => {
       try {
-        const res = await fetch('/api/tax-context');
+        const res = await apiFetch('/api/tax-context');
         const data = await res.json();
         if (!res.ok || data?.success === false) {
           setAisImport(null);
@@ -60,7 +65,11 @@ export default function DocumentsPage() {
       }
     };
     void refresh();
-  }, []);
+  }, [session]);
+
+  if (isLoading || !session) {
+    return <LoadingDashboard />;
+  }
 
   const totals = aisImport?.totals || {};
   const confirmed = records.filter((record) => record.status !== 'extracted').length;
@@ -69,6 +78,11 @@ export default function DocumentsPage() {
     <WorkspaceShell
       title="Documents"
       subtitle="Review imported documents, extracted fields, confidence, and confirmation status."
+      user={session.user}
+      onLogout={() => {
+        void signOut();
+        router.replace('/login');
+      }}
       actions={
         <button
           onClick={() => router.push('/import-data')}
