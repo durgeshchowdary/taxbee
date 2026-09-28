@@ -1,5 +1,6 @@
 ﻿import type { Metadata } from "next";
 import { AuthProvider } from "@/app/_contexts/AuthContext";
+import PWARegister from "@/components/pwa-register";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,7 +16,10 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          {children}
+          <PWARegister />
+        </AuthProvider>
       </body>
     </html>
   );
