@@ -16,57 +16,47 @@ export default function PWARegister() {
     useState<BeforeInstallPromptEvent | null>(null);
 
   const [visible, setVisible] = useState(false);
-  const [ios, setIos] = useState(false);
   const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const isStandalone =
+    // Register the service worker.
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("/sw.js", { scope: "/" })
+        .then((registration) => {
+          console.log(
+            "[TaxBee PWA] Service worker registered:",
+            registration.scope
+          );
+        })
+        .catch((error) => {
+          console.error(
+            "[TaxBee PWA] Service worker registration failed:",
+            error
+          );
+        });
+    }
+
+    // Already running as an installed PWA.
+    const standalone =
       window.matchMedia("(display-mode: standalone)").matches ||
       (window.navigator as Navigator & { standalone?: boolean }).standalone ===
         true;
 
-    if (isStandalone) {
-      return;
-    }
+    if (standalone) return;
 
-    const userAgent = window.navigator.userAgent;
-
-    const isIOS =
-      /iPad|iPhone|iPod/.test(userAgent) ||
-      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-
-    setIos(isIOS);
-
-    /*
-     * iOS does not support beforeinstallprompt.
-     * We therefore show our own instructions for adding TaxBee
-     * to the Home Screen.
-     */
-    if (isIOS) {
-      const dismissed = localStorage.getItem(
-        "taxbee-install-dismissed"
-      );
-
-      if (!dismissed) {
-        setVisible(true);
-      }
-
-      return;
-    }
+    const dismissed = localStorage.getItem("taxbee-install-dismissed");
 
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
 
-      const installPrompt =
-        event as BeforeInstallPromptEvent;
+      const installPrompt = event as BeforeInstallPromptEvent;
+
+      console.log("[TaxBee PWA] Install prompt available");
 
       setInstallEvent(installPrompt);
-
-      const dismissed = localStorage.getItem(
-        "taxbee-install-dismissed"
-      );
 
       if (!dismissed) {
         setVisible(true);
@@ -74,6 +64,8 @@ export default function PWARegister() {
     };
 
     const handleAppInstalled = () => {
+      console.log("[TaxBee PWA] App installed");
+
       setVisible(false);
       setInstallEvent(null);
       localStorage.removeItem("taxbee-install-dismissed");
@@ -84,10 +76,7 @@ export default function PWARegister() {
       handleBeforeInstallPrompt
     );
 
-    window.addEventListener(
-      "appinstalled",
-      handleAppInstalled
-    );
+    window.addEventListener("appinstalled", handleAppInstalled);
 
     return () => {
       window.removeEventListener(
@@ -95,21 +84,12 @@ export default function PWARegister() {
         handleBeforeInstallPrompt
       );
 
-      window.removeEventListener(
-        "appinstalled",
-        handleAppInstalled
-      );
+      window.removeEventListener("appinstalled", handleAppInstalled);
     };
   }, []);
 
   async function installTaxBee() {
-    if (ios) {
-      return;
-    }
-
-    if (!installEvent) {
-      return;
-    }
+    if (!installEvent) return;
 
     setInstalling(true);
 
@@ -118,16 +98,15 @@ export default function PWARegister() {
 
       const choice = await installEvent.userChoice;
 
+      console.log("[TaxBee PWA] Install choice:", choice.outcome);
+
       if (choice.outcome === "accepted") {
         setVisible(false);
       }
 
       setInstallEvent(null);
     } catch (error) {
-      console.error(
-        "TaxBee installation failed:",
-        error
-      );
+      console.error("[TaxBee PWA] Installation failed:", error);
     } finally {
       setInstalling(false);
     }
@@ -142,15 +121,7 @@ export default function PWARegister() {
     );
   }
 
-  /*
-   * Chromium:
-   * Only show the custom installer when the browser
-   * actually gives us a beforeinstallprompt event.
-   *
-   * iOS:
-   * Show installation instructions instead.
-   */
-  if (!visible || (!installEvent && !ios)) {
+  if (!visible || !installEvent) {
     return null;
   }
 
@@ -175,10 +146,7 @@ export default function PWARegister() {
 
           <div className="flex items-start gap-4">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-950 shadow-lg">
-              <span
-                className="text-2xl"
-                aria-hidden="true"
-              >
+              <span className="text-2xl" aria-hidden="true">
                 🐝
               </span>
             </div>
@@ -188,82 +156,31 @@ export default function PWARegister() {
                 Install TaxBee
               </h2>
 
-              {ios ? (
-                <p className="mt-1 text-sm leading-5 text-slate-600">
-                  Add TaxBee to your Home Screen for
-                  faster access to your tax workspace.
-                </p>
-              ) : (
-                <p className="mt-1 text-sm leading-5 text-slate-600">
-                  Get faster access to your tax workspace
-                  with the TaxBee app.
-                </p>
-              )}
+              <p className="mt-1 text-sm leading-5 text-slate-600">
+                Get faster access to your tax workspace with the TaxBee
+                desktop app.
+              </p>
             </div>
           </div>
 
-          {ios ? (
-            <div className="mt-5 rounded-xl bg-slate-50 p-4 text-sm leading-6 text-slate-700">
-              <div className="font-semibold text-slate-900">
-                Add TaxBee to your Home Screen
-              </div>
+          <div className="mt-5 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={installTaxBee}
+              disabled={installing}
+              className="flex-1 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
+            >
+              {installing ? "Installing…" : "Install TaxBee"}
+            </button>
 
-              <div className="mt-2">
-                1. Tap the{" "}
-                <span className="font-semibold">
-                  Share
-                </span>{" "}
-                button in Safari.
-              </div>
-
-              <div>
-                2. Select{" "}
-                <span className="font-semibold">
-                  Add to Home Screen
-                </span>
-                .
-              </div>
-
-              <div>
-                3. Tap{" "}
-                <span className="font-semibold">
-                  Add
-                </span>
-                .
-              </div>
-            </div>
-          ) : (
-            <div className="mt-5 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={installTaxBee}
-                disabled={installing}
-                className="flex-1 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60"
-              >
-                {installing
-                  ? "Installing…"
-                  : "Install TaxBee"}
-              </button>
-
-              <button
-                type="button"
-                onClick={dismissInstall}
-                className="rounded-xl px-3 py-2.5 text-sm font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
-              >
-                Not now
-              </button>
-            </div>
-          )}
-
-          {ios && (
             <button
               type="button"
               onClick={dismissInstall}
-              className="mt-4 w-full rounded-xl px-3 py-2.5 text-sm font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+              className="rounded-xl px-3 py-2.5 text-sm font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
             >
               Not now
             </button>
-          )}
+          </div>
         </div>
       </div>
     </div>
